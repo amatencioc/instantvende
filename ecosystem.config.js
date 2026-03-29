@@ -45,6 +45,19 @@ module.exports = {
       error_file: './logs/wa-error.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       merge_logs: true
+    },
+    {
+      name: 'instantvende-admin',
+      script: 'npx',
+      args: 'vite preview --port 3000 --host',
+      cwd: './frontend',
+      env: {
+        NODE_ENV: 'production'
+      },
+      out_file: './logs/admin-out.log',
+      error_file: './logs/admin-error.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      merge_logs: true
     }
   ]
 };

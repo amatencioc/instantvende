@@ -743,6 +743,53 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str
         log_with_context(logger, "info", "Producto creado", product_name=product.name, product_id=db_product.id)
         return db_product
 
+@app.put("/api/products/{product_id}")
+def update_product(
+    product_id: int,
+    product: ProductCreate,
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key)
+):
+    """Actualizar un producto existente"""
+    db_product = db.query(Product).filter(Product.id == product_id).first()
+    if not db_product:
+        raise ProductNotFoundException(f"Producto {product_id} no encontrado")
+
+    with handle_db_errors(db):
+        if product.name != db_product.name:
+            existing = db.query(Product).filter(
+                Product.name == product.name,
+                Product.id != product_id
+            ).first()
+            if existing:
+                raise ProductDuplicateException(f"Ya existe un producto con el nombre '{product.name}'")
+
+        for field, value in product.model_dump().items():
+            setattr(db_product, field, value)
+
+        db_product.version += 1
+        db.commit()
+        db.refresh(db_product)
+        log_with_context(logger, "info", "Producto actualizado", product_id=product_id)
+        return db_product
+
+@app.delete("/api/products/{product_id}")
+def delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key)
+):
+    """Eliminar un producto"""
+    db_product = db.query(Product).filter(Product.id == product_id).first()
+    if not db_product:
+        raise ProductNotFoundException(f"Producto {product_id} no encontrado")
+
+    with handle_db_errors(db):
+        db.delete(db_product)
+        db.commit()
+        log_with_context(logger, "info", "Producto eliminado", product_id=product_id)
+        return {"message": f"Producto {product_id} eliminado exitosamente"}
+
 def generate_ai_response(message: str, products: List[Product], profile: dict, conversation_history: List[str] = None, recently_viewed: List[str] = None) -> str:
     """
     Genera respuesta inteligente con personalidad y detección de intención
