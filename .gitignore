@@ -27,3 +27,4 @@ backups/
 .DS_Store
 Thumbs.db
 *.log
+*.db
