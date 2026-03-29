@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -5,6 +6,7 @@ import random
 import time
 import threading
 import concurrent.futures
+import schedule
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,6 +80,47 @@ class _BoundedCooldownStore:
 
 
 _message_cooldowns = _BoundedCooldownStore(max_size=10_000, ttl_seconds=300)
+
+# ===== EXECUTOR GLOBAL PARA OLLAMA =====
+# Reutilizado entre requests para evitar que executor.shutdown(wait=True) bloquee el proceso
+_ai_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,  # 1 activo + 1 en cola; evita bloquear FastAPI entre requests
+    thread_name_prefix="ollama-worker",
+)
+
+# ===== LOCKS POR NÚMERO DE TELÉFONO =====
+# Previene que el mismo número procese 2 mensajes en paralelo (causa raíz del bug del 2do mensaje)
+_phone_locks: dict[str, threading.Lock] = {}
+_phone_lock_last_used: dict[str, float] = {}
+_phone_locks_meta_lock = threading.Lock()
+
+
+def _get_phone_lock(phone: str) -> threading.Lock:
+    """Retorna (o crea) el lock para un número de teléfono específico."""
+    with _phone_locks_meta_lock:
+        if phone not in _phone_locks:
+            _phone_locks[phone] = threading.Lock()
+        _phone_lock_last_used[phone] = time.time()
+        return _phone_locks[phone]
+
+
+def _cleanup_phone_locks(max_age_seconds: float = 3600.0):
+    """Limpia locks de teléfonos inactivos para evitar memory leak.
+
+    Solo elimina locks de números que no han sido usados en `max_age_seconds`.
+    No intenta adquirir los locks, por lo que no puede causar falsos rate limits.
+    """
+    cutoff = time.time() - max_age_seconds
+    with _phone_locks_meta_lock:
+        to_delete = [
+            phone for phone, last_used in _phone_lock_last_used.items()
+            if last_used < cutoff
+        ]
+        for phone in to_delete:
+            del _phone_locks[phone]
+            del _phone_lock_last_used[phone]
+    if to_delete:
+        logger.info("Phone locks limpiados", extra={"count": len(to_delete)})
 
 # ===== RESPUESTAS FRECUENTES (FAQ) =====
 
@@ -467,21 +510,29 @@ def _backup_loop() -> None:
         interval_hours=settings.BACKUP_INTERVAL_HOURS,
         max_backups=settings.MAX_BACKUPS,
     )
+    # Limpiar phone locks sin uso cada N horas para evitar memory leak
+    schedule.every(settings.BACKUP_INTERVAL_HOURS).hours.do(_cleanup_phone_locks)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Pre-cargar modelo Ollama al arrancar (dentro del lifespan para no bloquear imports)
+    # Pre-cargar modelo Ollama de forma asíncrona usando el executor global
     logger.info("⏳ Pre-cargando modelo Ollama...")
     try:
-        ollama.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=[{'role': 'user', 'content': 'test'}],
-            options={'num_predict': 1}
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            _ai_executor,
+            lambda: ollama.chat(
+                model=settings.OLLAMA_MODEL,
+                # 'hola' dispara el procesamiento en español — más representativo del uso real
+                messages=[{'role': 'user', 'content': 'hola'}],
+                # num_predict=1 minimiza el trabajo; num_thread coincide con el default de runtime
+                options={'num_predict': 1, 'num_thread': 4}
+            )
         )
-        logger.info("✅ Modelo cargado en memoria")
+        logger.info("✅ Modelo Ollama pre-calentado")
     except Exception as e:
-        logger.warning("⚠️  No se pudo pre-cargar modelo Ollama", extra={"error": str(e)})
+        logger.warning("⚠️  No se pudo pre-calentar Ollama", extra={"error": str(e)})
 
     # Backup inicial al arrancar el servidor
     _mgr = BackupManager(max_backups=settings.MAX_BACKUPS)
@@ -494,6 +545,8 @@ async def lifespan(_app: FastAPI):
     # Hilo daemon de backup periódico (se cierra automáticamente con el proceso)
     threading.Thread(target=_backup_loop, daemon=True).start()
     yield
+    # Apagar el executor global limpiamente al cerrar el servidor
+    _ai_executor.shutdown(wait=False)
 
 
 app = FastAPI(title="InstantVende API", version="1.0.0-mvp", lifespan=lifespan)
@@ -843,23 +896,22 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
             'num_thread': ai_cfg.get("ollama_num_thread", 4),
         }
 
-        # Llamada con timeout de 45 segundos para no bloquear al cliente
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                ollama.chat,
-                model=settings.OLLAMA_MODEL,
-                messages=ollama_messages,
-                options=ollama_options
+        # Llamada con timeout usando el executor global (no bloquea FastAPI entre requests)
+        future = _ai_executor.submit(
+            ollama.chat,
+            model=settings.OLLAMA_MODEL,
+            messages=ollama_messages,
+            options=ollama_options
+        )
+        try:
+            response = future.result(timeout=settings.OLLAMA_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            log_with_context(logger, "warning", "Ollama timeout", timeout=settings.OLLAMA_TIMEOUT)
+            return msgs_cfg.get(
+                "error_timeout",
+                "Disculpa la demora 🙏 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos.",
             )
-            try:
-                response = future.result(timeout=settings.OLLAMA_TIMEOUT)
-            except concurrent.futures.TimeoutError:
-                future.cancel()  # prevenir callbacks pendientes (no detiene el hilo en ejecución)
-                log_with_context(logger, "warning", "Ollama timeout", timeout=settings.OLLAMA_TIMEOUT)
-                return msgs_cfg.get(
-                    "error_timeout",
-                    "Disculpa la demora 🙏 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos.",
-                )
 
         elapsed = time.time() - start_time
         ai_message = response['message']['content'].strip()
@@ -913,291 +965,302 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     # MESSAGE_COOLDOWN_SECONDS es configuración de servidor, no del perfil del bot
     message_cooldown = settings.MESSAGE_COOLDOWN_SECONDS
 
-    # Rate limiting: evitar procesamiento doble si el mismo número envía mensajes consecutivos
-    if _message_cooldowns.check_and_set(request.phone, message_cooldown):
+    # Lock por teléfono: previene procesamiento paralelo del mismo usuario
+    # (causa raíz del bug del 2do mensaje con Ollama lento)
+    phone_lock = _get_phone_lock(request.phone)
+    if not phone_lock.acquire(blocking=False):
+        log_with_context(logger, "info", "Request concurrente bloqueado", phone=request.phone[-4:])
         raise RateLimitException(msgs_cfg.get("rate_limit", "Un momento, estoy procesando tu mensaje anterior 🙏"))
 
-    # 1. Buscar o crear conversación (thread-safe)
-    conversation = get_or_create_conversation(db, request.phone)
-    log_with_context(logger, "info", "Conversación activa", conversation_id=conversation.id)
+    try:
+        # Rate limiting: evitar procesamiento doble si el mismo número envía mensajes consecutivos
+        if _message_cooldowns.check_and_set(request.phone, message_cooldown):
+            raise RateLimitException(msgs_cfg.get("rate_limit", "Un momento, estoy procesando tu mensaje anterior 🙏"))
 
-    # 2. Guardar mensaje del cliente
-    customer_msg = Message(
-        conversation_id=conversation.id,
-        content=request.message,
-        from_customer=True
-    )
-    db.add(customer_msg)
-    db.commit()
+        # 1. Buscar o crear conversación (thread-safe)
+        conversation = get_or_create_conversation(db, request.phone)
+        log_with_context(logger, "info", "Conversación activa", conversation_id=conversation.id)
 
-    # 3. Verificar si bot está activo
-    if not conversation.bot_enabled:
-        log_with_context(logger, "info", "Bot desactivado para conversación", conversation_id=conversation.id)
-        # bot_disabled_response puede ser null en el perfil para mantener el comportamiento original
-        # (sin respuesta automática — el agente humano responde manualmente)
-        disabled_msg = msgs_cfg.get("bot_disabled_response") or None
+        # 2. Guardar mensaje del cliente
+        customer_msg = Message(
+            conversation_id=conversation.id,
+            content=request.message,
+            from_customer=True
+        )
+        db.add(customer_msg)
+        db.commit()
+
+        # 3. Verificar si bot está activo
+        if not conversation.bot_enabled:
+            log_with_context(logger, "info", "Bot desactivado para conversación", conversation_id=conversation.id)
+            # bot_disabled_response puede ser null en el perfil para mantener el comportamiento original
+            # (sin respuesta automática — el agente humano responde manualmente)
+            disabled_msg = msgs_cfg.get("bot_disabled_response") or None
+            return {
+                "reply": disabled_msg,
+                "bot_enabled": False,
+                "message": "Bot desactivado. Respuesta manual requerida."
+            }
+
+        # 4. Detectar comandos
+        command = detect_command(request.message)
+        ai_response = None
+        media_url = None
+
+        if command == "catalog":
+            products = db.query(Product).filter(Product.stock > 0).all()
+            ai_response = generate_catalog(products, profile)
+            log_with_context(logger, "info", "Comando: catálogo", product_count=len(products))
+
+        elif command == "cart":
+            cart_items = db.query(CartItem).filter(
+                CartItem.conversation_id == conversation.id
+            ).all()
+            product_ids = [item.product_id for item in cart_items]
+            products_list = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
+            products_dict = {p.id: p for p in products_list}
+            ai_response = generate_cart_display(cart_items, products_dict)
+            log_with_context(logger, "info", "Comando: ver carrito", item_count=len(cart_items))
+
+        elif command == "order":
+            cart_items = db.query(CartItem).filter(
+                CartItem.conversation_id == conversation.id
+            ).all()
+
+            if not cart_items:
+                ai_response = "🛒 Tu carrito está vacío.\n\nEscribe *#catalogo* para ver nuestros productos."
+            else:
+                product_ids = [item.product_id for item in cart_items]
+                products_list = db.query(Product).filter(Product.id.in_(product_ids)).all()
+                products_dict = {p.id: p for p in products_list}
+
+                # Validar stock y calcular total
+                out_of_stock = []
+                total = 0
+                for item in cart_items:
+                    product = products_dict.get(item.product_id)
+                    if product:
+                        if product.stock < item.quantity:
+                            out_of_stock.append(f"{product.name} (disponible: {product.stock})")
+                        else:
+                            total += product.price * item.quantity
+
+                if out_of_stock:
+                    ai_response = (
+                        f"⚠️ *Stock insuficiente para:*\n" +
+                        "\n".join(f"• {p}" for p in out_of_stock) +
+                        "\n\nEscribe *#limpiar* para vaciar el carrito y volver a agregar."
+                    )
+                else:
+                    # Crear pedido — transacción atómica con lock de stock para evitar race conditions
+                    with handle_db_errors(db):
+                        order = Order(
+                            conversation_id=conversation.id,
+                            phone=request.phone,
+                            total=0,  # se actualizará a confirmed_total antes del commit
+                            status="pending"
+                        )
+                        db.add(order)
+                        db.flush()  # obtener order.id sin hacer commit todavía
+
+                        confirmed_total = 0
+                        out_of_stock_atomic = []
+
+                        # Crear items del pedido y descontar stock
+                        for item in cart_items:
+                            product = db.query(Product).filter(
+                                Product.id == item.product_id
+                            ).with_for_update().first()
+
+                            if not product:
+                                db.rollback()
+                                raise ProductNotFoundException(f"Producto {item.product_id} no encontrado")
+
+                            if product.stock < item.quantity:
+                                out_of_stock_atomic.append(f"{product.name} (disponible: {product.stock})")
+                                continue
+
+                            db.add(OrderItem(
+                                order_id=order.id,
+                                product_id=product.id,
+                                product_name=product.name,
+                                product_price=product.price,
+                                quantity=item.quantity
+                            ))
+                            product.stock -= item.quantity
+                            confirmed_total += product.price * item.quantity
+
+                        if out_of_stock_atomic:
+                            db.rollback()
+                            ai_response = (
+                                f"⚠️ *Stock insuficiente para:*\n" +
+                                "\n".join(f"• {p}" for p in out_of_stock_atomic) +
+                                "\n\nEscribe *#limpiar* para vaciar el carrito y volver a agregar."
+                            )
+                        else:
+                            order.total = confirmed_total
+
+                            # Vaciar carrito dentro de la misma transacción
+                            db.query(CartItem).filter(
+                                CartItem.conversation_id == conversation.id
+                            ).delete()
+
+                            db.commit()  # commit atómico de TODO
+
+                            total = confirmed_total
+                            _payment_str = ", ".join(get_field(profile, "payments", "methods", default=["Yape", "Plin"]))
+                            ai_response = (
+                                f"✅ *¡PEDIDO CONFIRMADO!*\n"
+                                f"─────────────────────────\n"
+                                f"🔖 Pedido #{order.id}\n"
+                                f"💰 Total: S/ {total / 100:.2f}\n"
+                                f"📋 Estado: Pendiente de confirmación\n\n"
+                                f"📞 Te contactaremos para coordinar pago y envío.\n"
+                                f"💳 Pagos: {_payment_str}\n\n"
+                                f"¡Gracias por tu compra! 🙌"
+                            )
+                            log_with_context(logger, "info", "Pedido creado", order_id=order.id, total=total)
+
+        elif command == "clear_cart":
+            deleted = db.query(CartItem).filter(
+                CartItem.conversation_id == conversation.id
+            ).delete()
+            db.commit()
+            ai_response = f"🗑️ Carrito vaciado ({deleted} item(s) eliminados).\n\nEscribe *#catalogo* para empezar de nuevo."
+            log_with_context(logger, "info", "Comando: limpiar carrito", deleted=deleted)
+
+        elif command == "help":
+            ai_response = msgs_cfg.get("bot_help_text") or BOT_HELP_TEXT
+            log_with_context(logger, "info", "Comando: ayuda")
+
+        elif command == "status":
+            last_order = db.query(Order).filter(
+                Order.phone == request.phone
+            ).order_by(Order.created_at.desc()).first()
+
+            if not last_order:
+                ai_response = "📦 No tienes pedidos aún.\n\nEscribe *#catalogo* para ver nuestros productos."
+            else:
+                status_labels = {
+                    "pending":   "⏳ Pendiente de confirmación",
+                    "confirmed": "✅ Confirmado",
+                    "shipped":   "🚚 En camino",
+                    "delivered": "📬 Entregado",
+                    "cancelled": "❌ Cancelado",
+                }
+                label = status_labels.get(last_order.status, last_order.status)
+                ai_response = (
+                    f"📦 *ESTADO DE TU PEDIDO*\n"
+                    f"─────────────────────────\n"
+                    f"🔖 Pedido #{last_order.id}\n"
+                    f"💰 Total: S/ {last_order.total / 100:.2f}\n"
+                    f"📋 Estado: {label}\n"
+                    f"📅 Fecha: {last_order.created_at.strftime('%d/%m/%Y %H:%M')}\n\n"
+                    f"¿Necesitas algo más? 😊"
+                )
+            log_with_context(logger, "info", "Comando: estado de pedido")
+
+        elif command == "add_to_cart":
+            match = re.search(r'\d+', request.message)
+            if match:
+                product_num = int(match.group())
+                products = db.query(Product).filter(Product.stock > 0).all()
+
+                if 1 <= product_num <= len(products):
+                    product = products[product_num - 1]
+
+                    # Re-consultar con lock para evitar race condition de stock
+                    locked_product = db.query(Product).filter(
+                        Product.id == product.id
+                    ).with_for_update().first()
+
+                    if not locked_product or locked_product.stock < 1:
+                        product_name = locked_product.name if locked_product else "ese producto"
+                        ai_response = f"⚠️ Lo siento, *{product_name}* está agotado.\n\nEscribe *#catalogo* para ver otros productos disponibles."
+                    else:
+                        with handle_db_errors(db):
+                            existing = db.query(CartItem).filter(
+                                CartItem.conversation_id == conversation.id,
+                                CartItem.product_id == locked_product.id
+                            ).with_for_update().first()
+
+                            if existing:
+                                existing.quantity += 1
+                            else:
+                                db.add(CartItem(
+                                    conversation_id=conversation.id,
+                                    product_id=locked_product.id,
+                                    quantity=1
+                                ))
+                            db.commit()
+
+                        if locked_product.image_url:
+                            media_url = locked_product.image_url
+
+                        ai_response = (
+                            f"✅ *{locked_product.name}* agregado al carrito!\n"
+                            f"💰 Precio: S/ {locked_product.price / 100:.2f}\n\n"
+                            f"🛒 Ver carrito: *#carrito*\n"
+                            f"📦 Confirmar pedido: *#pedido*\n"
+                            f"📋 Seguir comprando: *#catalogo*"
+                        )
+                        log_with_context(logger, "info", "Producto agregado al carrito", product_num=product_num, product_name=locked_product.name)
+                else:
+                    ai_response = f"⚠️ Número inválido. Escribe *#catalogo* para ver los productos disponibles (1 al {len(products)})."
+            else:
+                ai_response = "⚠️ Por favor indica el número de producto. Ejemplo: *agregar 1*"
+
+        # 5. Si no fue un comando → usar IA
+        if ai_response is None:
+            history_limit = ai_cfg.get("history_messages_limit", settings.HISTORY_MESSAGES_LIMIT)
+            recent_messages = db.query(Message).filter(
+                Message.conversation_id == conversation.id
+            ).order_by(Message.created_at.desc()).limit(history_limit).all()
+
+            conversation_history = [
+                f"{'Cliente' if msg.from_customer else bot_name}: {msg.content}"
+                for msg in reversed(recent_messages)
+            ]
+
+            cart_items = db.query(CartItem).filter(
+                CartItem.conversation_id == conversation.id
+            ).all()
+            recently_viewed = [str(item.product_id) for item in cart_items]
+
+            products = db.query(Product).filter(Product.stock > 0).all()
+            log_with_context(logger, "info", "Procesando con IA", product_count=len(products))
+
+            ai_response = generate_ai_response(
+                message=request.message,
+                products=products,
+                profile=profile,
+                conversation_history=conversation_history,
+                recently_viewed=recently_viewed
+            )
+
+        # 6. Guardar respuesta del bot
+        db.add(Message(
+            conversation_id=conversation.id,
+            content=ai_response,
+            from_customer=False
+        ))
+
+        # 7. Actualizar timestamp
+        conversation.last_message_at = datetime.now(timezone.utc)
+        db.commit()
+
+        log_with_context(logger, "info", "Respuesta enviada", preview=ai_response[:60])
+
         return {
-            "reply": disabled_msg,
-            "bot_enabled": False,
-            "message": "Bot desactivado. Respuesta manual requerida."
+            "reply": ai_response,
+            "bot_enabled": True,
+            "conversation_id": conversation.id,
+            "media_url": media_url,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
-    # 4. Detectar comandos
-    command = detect_command(request.message)
-    ai_response = None
-    media_url = None
-
-    if command == "catalog":
-        products = db.query(Product).filter(Product.stock > 0).all()
-        ai_response = generate_catalog(products, profile)
-        log_with_context(logger, "info", "Comando: catálogo", product_count=len(products))
-
-    elif command == "cart":
-        cart_items = db.query(CartItem).filter(
-            CartItem.conversation_id == conversation.id
-        ).all()
-        product_ids = [item.product_id for item in cart_items]
-        products_list = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
-        products_dict = {p.id: p for p in products_list}
-        ai_response = generate_cart_display(cart_items, products_dict)
-        log_with_context(logger, "info", "Comando: ver carrito", item_count=len(cart_items))
-
-    elif command == "order":
-        cart_items = db.query(CartItem).filter(
-            CartItem.conversation_id == conversation.id
-        ).all()
-
-        if not cart_items:
-            ai_response = "🛒 Tu carrito está vacío.\n\nEscribe *#catalogo* para ver nuestros productos."
-        else:
-            product_ids = [item.product_id for item in cart_items]
-            products_list = db.query(Product).filter(Product.id.in_(product_ids)).all()
-            products_dict = {p.id: p for p in products_list}
-
-            # Validar stock y calcular total
-            out_of_stock = []
-            total = 0
-            for item in cart_items:
-                product = products_dict.get(item.product_id)
-                if product:
-                    if product.stock < item.quantity:
-                        out_of_stock.append(f"{product.name} (disponible: {product.stock})")
-                    else:
-                        total += product.price * item.quantity
-
-            if out_of_stock:
-                ai_response = (
-                    f"⚠️ *Stock insuficiente para:*\n" +
-                    "\n".join(f"• {p}" for p in out_of_stock) +
-                    "\n\nEscribe *#limpiar* para vaciar el carrito y volver a agregar."
-                )
-            else:
-                # Crear pedido — transacción atómica con lock de stock para evitar race conditions
-                with handle_db_errors(db):
-                    order = Order(
-                        conversation_id=conversation.id,
-                        phone=request.phone,
-                        total=0,  # se actualizará a confirmed_total antes del commit
-                        status="pending"
-                    )
-                    db.add(order)
-                    db.flush()  # obtener order.id sin hacer commit todavía
-
-                    confirmed_total = 0
-                    out_of_stock_atomic = []
-
-                    # Crear items del pedido y descontar stock
-                    for item in cart_items:
-                        product = db.query(Product).filter(
-                            Product.id == item.product_id
-                        ).with_for_update().first()
-
-                        if not product:
-                            db.rollback()
-                            raise ProductNotFoundException(f"Producto {item.product_id} no encontrado")
-
-                        if product.stock < item.quantity:
-                            out_of_stock_atomic.append(f"{product.name} (disponible: {product.stock})")
-                            continue
-
-                        db.add(OrderItem(
-                            order_id=order.id,
-                            product_id=product.id,
-                            product_name=product.name,
-                            product_price=product.price,
-                            quantity=item.quantity
-                        ))
-                        product.stock -= item.quantity
-                        confirmed_total += product.price * item.quantity
-
-                    if out_of_stock_atomic:
-                        db.rollback()
-                        ai_response = (
-                            f"⚠️ *Stock insuficiente para:*\n" +
-                            "\n".join(f"• {p}" for p in out_of_stock_atomic) +
-                            "\n\nEscribe *#limpiar* para vaciar el carrito y volver a agregar."
-                        )
-                    else:
-                        order.total = confirmed_total
-
-                        # Vaciar carrito dentro de la misma transacción
-                        db.query(CartItem).filter(
-                            CartItem.conversation_id == conversation.id
-                        ).delete()
-
-                        db.commit()  # commit atómico de TODO
-
-                        total = confirmed_total
-                        _payment_str = ", ".join(get_field(profile, "payments", "methods", default=["Yape", "Plin"]))
-                        ai_response = (
-                            f"✅ *¡PEDIDO CONFIRMADO!*\n"
-                            f"─────────────────────────\n"
-                            f"🔖 Pedido #{order.id}\n"
-                            f"💰 Total: S/ {total / 100:.2f}\n"
-                            f"📋 Estado: Pendiente de confirmación\n\n"
-                            f"📞 Te contactaremos para coordinar pago y envío.\n"
-                            f"💳 Pagos: {_payment_str}\n\n"
-                            f"¡Gracias por tu compra! 🙌"
-                        )
-                        log_with_context(logger, "info", "Pedido creado", order_id=order.id, total=total)
-
-    elif command == "clear_cart":
-        deleted = db.query(CartItem).filter(
-            CartItem.conversation_id == conversation.id
-        ).delete()
-        db.commit()
-        ai_response = f"🗑️ Carrito vaciado ({deleted} item(s) eliminados).\n\nEscribe *#catalogo* para empezar de nuevo."
-        log_with_context(logger, "info", "Comando: limpiar carrito", deleted=deleted)
-
-    elif command == "help":
-        ai_response = msgs_cfg.get("bot_help_text") or BOT_HELP_TEXT
-        log_with_context(logger, "info", "Comando: ayuda")
-
-    elif command == "status":
-        last_order = db.query(Order).filter(
-            Order.phone == request.phone
-        ).order_by(Order.created_at.desc()).first()
-
-        if not last_order:
-            ai_response = "📦 No tienes pedidos aún.\n\nEscribe *#catalogo* para ver nuestros productos."
-        else:
-            status_labels = {
-                "pending":   "⏳ Pendiente de confirmación",
-                "confirmed": "✅ Confirmado",
-                "shipped":   "🚚 En camino",
-                "delivered": "📬 Entregado",
-                "cancelled": "❌ Cancelado",
-            }
-            label = status_labels.get(last_order.status, last_order.status)
-            ai_response = (
-                f"📦 *ESTADO DE TU PEDIDO*\n"
-                f"─────────────────────────\n"
-                f"🔖 Pedido #{last_order.id}\n"
-                f"💰 Total: S/ {last_order.total / 100:.2f}\n"
-                f"📋 Estado: {label}\n"
-                f"📅 Fecha: {last_order.created_at.strftime('%d/%m/%Y %H:%M')}\n\n"
-                f"¿Necesitas algo más? 😊"
-            )
-        log_with_context(logger, "info", "Comando: estado de pedido")
-
-    elif command == "add_to_cart":
-        match = re.search(r'\d+', request.message)
-        if match:
-            product_num = int(match.group())
-            products = db.query(Product).filter(Product.stock > 0).all()
-
-            if 1 <= product_num <= len(products):
-                product = products[product_num - 1]
-
-                # Re-consultar con lock para evitar race condition de stock
-                locked_product = db.query(Product).filter(
-                    Product.id == product.id
-                ).with_for_update().first()
-
-                if not locked_product or locked_product.stock < 1:
-                    product_name = locked_product.name if locked_product else "ese producto"
-                    ai_response = f"⚠️ Lo siento, *{product_name}* está agotado.\n\nEscribe *#catalogo* para ver otros productos disponibles."
-                else:
-                    with handle_db_errors(db):
-                        existing = db.query(CartItem).filter(
-                            CartItem.conversation_id == conversation.id,
-                            CartItem.product_id == locked_product.id
-                        ).with_for_update().first()
-
-                        if existing:
-                            existing.quantity += 1
-                        else:
-                            db.add(CartItem(
-                                conversation_id=conversation.id,
-                                product_id=locked_product.id,
-                                quantity=1
-                            ))
-                        db.commit()
-
-                    if locked_product.image_url:
-                        media_url = locked_product.image_url
-
-                    ai_response = (
-                        f"✅ *{locked_product.name}* agregado al carrito!\n"
-                        f"💰 Precio: S/ {locked_product.price / 100:.2f}\n\n"
-                        f"🛒 Ver carrito: *#carrito*\n"
-                        f"📦 Confirmar pedido: *#pedido*\n"
-                        f"📋 Seguir comprando: *#catalogo*"
-                    )
-                    log_with_context(logger, "info", "Producto agregado al carrito", product_num=product_num, product_name=locked_product.name)
-            else:
-                ai_response = f"⚠️ Número inválido. Escribe *#catalogo* para ver los productos disponibles (1 al {len(products)})."
-        else:
-            ai_response = "⚠️ Por favor indica el número de producto. Ejemplo: *agregar 1*"
-
-    # 5. Si no fue un comando → usar IA
-    if ai_response is None:
-        history_limit = ai_cfg.get("history_messages_limit", settings.HISTORY_MESSAGES_LIMIT)
-        recent_messages = db.query(Message).filter(
-            Message.conversation_id == conversation.id
-        ).order_by(Message.created_at.desc()).limit(history_limit).all()
-
-        conversation_history = [
-            f"{'Cliente' if msg.from_customer else bot_name}: {msg.content}"
-            for msg in reversed(recent_messages)
-        ]
-
-        cart_items = db.query(CartItem).filter(
-            CartItem.conversation_id == conversation.id
-        ).all()
-        recently_viewed = [str(item.product_id) for item in cart_items]
-
-        products = db.query(Product).filter(Product.stock > 0).all()
-        log_with_context(logger, "info", "Procesando con IA", product_count=len(products))
-
-        ai_response = generate_ai_response(
-            message=request.message,
-            products=products,
-            profile=profile,
-            conversation_history=conversation_history,
-            recently_viewed=recently_viewed
-        )
-
-    # 6. Guardar respuesta del bot
-    db.add(Message(
-        conversation_id=conversation.id,
-        content=ai_response,
-        from_customer=False
-    ))
-
-    # 7. Actualizar timestamp
-    conversation.last_message_at = datetime.now(timezone.utc)
-    db.commit()
-
-    log_with_context(logger, "info", "Respuesta enviada", preview=ai_response[:60])
-
-    return {
-        "reply": ai_response,
-        "bot_enabled": True,
-        "conversation_id": conversation.id,
-        "media_url": media_url,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
+    finally:
+        phone_lock.release()
 
 # ===== ENDPOINTS DE CONVERSACIONES =====
 
