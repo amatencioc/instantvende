@@ -903,7 +903,7 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
 def process_message(request: MessageRequest, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Procesar mensaje con IA, comandos y manejo de carrito/pedidos"""
 
-    log_with_context(logger, "info", "Nuevo mensaje recibido", phone=request.phone[-4:], message=request.message[:100])
+    log_with_context(logger, "info", "Nuevo mensaje recibido", phone=request.phone[-4:], msg_preview=request.message[:100])
 
     # Cargar perfil activo (con fallback a JSON por defecto)
     profile = get_profile(db)
