@@ -6,4 +6,4 @@ export const getConversationMessages = (id) =>
   client.get(`/api/conversations/${id}/messages`)
 
 export const toggleBot = (id, enabled) =>
-  client.patch(`/api/conversations/${id}/toggle-bot?enabled=${enabled}`)
+  client.patch(`/api/conversations/${id}/toggle-bot`, null, { params: { enabled } })
