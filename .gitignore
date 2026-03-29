@@ -14,6 +14,9 @@ whatsapp/whatsapp-session/
 whatsapp/.env
 whatsapp/.env.*
 
+# ===== PM2 =====
+logs/
+
 # ===== General =====
 .DS_Store
 Thumbs.db

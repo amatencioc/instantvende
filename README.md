@@ -339,6 +339,60 @@ pending → confirmed → shipped → delivered
 
 ---
 
-## 📝 Licencia
+## � Producción con PM2 (auto-restart)
+
+PM2 mantiene ambos servicios corriendo 24/7 y los reinicia automáticamente si se caen.
+
+### Instalación
+
+```bash
+npm install -g pm2
+```
+
+### Iniciar todo con un comando
+
+```bat
+# Windows
+start.bat
+
+# Mac/Linux
+pm2 start ecosystem.config.js
+```
+
+### Comandos útiles
+
+```bash
+pm2 status                     # Estado de los servicios
+pm2 logs                       # Logs en tiempo real (ambos)
+pm2 logs instantvende-api      # Solo logs del backend
+pm2 logs instantvende-wa       # Solo logs de WhatsApp
+pm2 restart instantvende-api   # Reiniciar backend
+pm2 restart instantvende-wa    # Reiniciar WhatsApp
+pm2 stop all                   # Detener todo
+pm2 delete all                 # Quitar de PM2
+```
+
+### Auto-arranque al reiniciar el servidor
+
+```bash
+pm2 startup       # Genera el comando según tu OS (ejecutar el comando que muestra)
+pm2 save          # Guarda el estado actual para que arranque automático
+```
+
+### Comportamiento ante fallos
+
+| Evento | Respuesta |
+|--------|-----------|
+| Backend cuelgue/crash | PM2 reinicia el proceso automáticamente |
+| WhatsApp client cae | PM2 reinicia (espera 5s para evitar loop) |
+| Timeout de Ollama (45s) | El bot responde con mensaje de fallback, sin reinicio |
+| Backend no responde (ECONNREFUSED) | WhatsApp client envía mensaje de error al cliente |
+| Backend usa >500MB RAM | PM2 reinicia el proceso para liberar memoria |
+
+Los logs se guardan en `./logs/` con timestamp.
+
+---
+
+## �📝 Licencia
 
 MIT — Libre para uso personal y comercial.
