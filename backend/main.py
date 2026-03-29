@@ -5,7 +5,7 @@ import time
 import threading
 import concurrent.futures
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -24,41 +24,41 @@ from exceptions import (
     InsufficientStockException,
     OrderNotFoundException,
     ConversationNotFoundException,
+    RateLimitException,
 )
 from logger import setup_logger, log_with_context
 from backup import BackupManager, start_backup_scheduler
 from database import (
     SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem,
 )
+import bot_config
 
 # ===== LOGGING =====
 logger = setup_logger()
 
-# ===== PRE-CARGAR MODELO AL INICIAR =====
-logger.info("⏳ Pre-cargando modelo Ollama...")
-try:
-    ollama.chat(
-        model=settings.OLLAMA_MODEL,
-        messages=[{'role': 'user', 'content': 'test'}],
-        options={'num_predict': 1}
+# Advertencia si OLLAMA_TIMEOUT es muy bajo
+if settings.OLLAMA_TIMEOUT < 10:
+    logger.warning(
+        "⚠️  OLLAMA_TIMEOUT es menor de 10 segundos — probablemente incorrecto",
+        extra={"ollama_timeout": settings.OLLAMA_TIMEOUT},
     )
-    logger.info("✅ Modelo cargado en memoria")
-except Exception as e:
-    logger.warning("⚠️  No se pudo pre-cargar modelo Ollama", extra={"error": str(e)})
+
+# ===== RATE LIMITING EN MEMORIA =====
+_message_cooldowns: dict[str, float] = {}
 
 # ===== RESPUESTAS FRECUENTES (FAQ) =====
 FAQ_RESPONSES = {
-    "horario": """📅 *Horario de Atención:*
-• Lun - Vie: 9:00 AM - 8:00 PM
-• Sábados: 10:00 AM - 6:00 PM
-• Domingos: Cerrado 😴
+    "horario": f"""📅 *Horario de Atención:*
+• {bot_config.SCHEDULE_WEEKDAY}
+• {bot_config.SCHEDULE_SATURDAY}
+• {bot_config.SCHEDULE_SUNDAY}
 
 Si escribes fuera de horario, te respondo en cuanto abramos. ¿Te puedo ayudar en algo más? 😊""",
 
-    "envio": """🚚 *Envíos a todo el Perú:*
-• Lima Metropolitana: 24-48 horas — S/ 10
-• Provincias: 3-5 días hábiles — S/ 15
-• 🎁 *GRATIS* en compras mayores a S/ 80
+    "envio": f"""🚚 *Envíos a todo el Perú:*
+• Lima Metropolitana: 24-48 horas — {bot_config.SHIPPING_LIMA_PRICE}
+• Provincias: 3-5 días hábiles — {bot_config.SHIPPING_PROVINCES_PRICE}
+• 🎁 *GRATIS* en compras mayores a {bot_config.SHIPPING_FREE_THRESHOLD}
 
 Trabajamos con Olva Courier y Shalom. ¿A qué distrito te envío? 😊""",
 
@@ -77,17 +77,17 @@ Todos seguros y con confirmación al instante. ¿Con cuál te queda mejor? 😊"
 
 ¡Vendemos con confianza! ¿Qué producto te interesa? 😊""",
 
-    "ubicacion": """📍 *Encuéntranos:*
-Fresh Boy Store
-Av. Principal 123, Miraflores, Lima
+    "ubicacion": f"""📍 *Encuéntranos:*
+{bot_config.STORE_NAME}
+{bot_config.STORE_ADDRESS}
 
 🛵 También hacemos delivery a todo Lima el mismo día (pedidos antes de las 5 PM).
 ¿Prefieres venir o te lo enviamos? 😊""",
 
-    "descuento": """🏷️ *Descuentos y Promos:*
-• Compra 2 productos → 10% de descuento
-• Compra 3 o más → 15% de descuento
-• 🎁 Envío gratis comprando más de S/ 80
+    "descuento": f"""🏷️ *Descuentos y Promos:*
+• Compra 2 productos → {bot_config.DISCOUNT_TWO_PRODUCTS}% de descuento
+• Compra 3 o más → {bot_config.DISCOUNT_THREE_PLUS}% de descuento
+• 🎁 Envío gratis comprando más de {bot_config.SHIPPING_FREE_THRESHOLD}
 
 ¡Arma tu kit y ahorra! Escribe *#catalogo* para ver los productos. 😊""",
 
@@ -179,12 +179,12 @@ def generate_catalog(products: List) -> str:
     if not products:
         return "😔 No tenemos productos disponibles en este momento. ¡Vuelve pronto!"
 
-    catalog = "🛍️ *CATÁLOGO FRESH BOY STORE*\n"
+    catalog = f"🛍️ *CATÁLOGO {bot_config.STORE_NAME.upper()}*\n"
     catalog += "─" * 30 + "\n\n"
 
     for i, p in enumerate(products, 1):
         stock_emoji = "✅" if p.stock > 5 else ("⚠️" if p.stock > 0 else "❌")
-        desc = (p.description[:60] + "...") if len(p.description) > 60 else p.description
+        desc = (p.description[:bot_config.CATALOG_DESC_MAX_CHARS] + "...") if len(p.description) > bot_config.CATALOG_DESC_MAX_CHARS else p.description
         catalog += f"*{i}. {p.name}*\n"
         catalog += f"   💰 S/ {p.price / 100:.2f}\n"
         catalog += f"   {stock_emoji} Stock: {p.stock} unidades\n"
@@ -369,7 +369,7 @@ def get_product_recommendations(message: str, products: List) -> List:
             relevant_product_keywords.update(triggers)
 
     if not relevant_product_keywords:
-        return products[:3]  # devuelve los primeros si no hay match
+        return products[:bot_config.AI_MAX_RECOMMENDATIONS]  # devuelve los primeros si no hay match
 
     scored = []
     for p in products:
@@ -379,7 +379,7 @@ def get_product_recommendations(message: str, products: List) -> List:
             scored.append((score, p))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [p for _, p in scored[:3]] if scored else products[:3]
+    return [p for _, p in scored[:bot_config.AI_MAX_RECOMMENDATIONS]] if scored else products[:bot_config.AI_MAX_RECOMMENDATIONS]
 
 def _backup_loop() -> None:
     """Hilo daemon que realiza backups periódicos de la base de datos SQLite."""
@@ -391,6 +391,18 @@ def _backup_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Pre-cargar modelo Ollama al arrancar (dentro del lifespan para no bloquear imports)
+    logger.info("⏳ Pre-cargando modelo Ollama...")
+    try:
+        ollama.chat(
+            model=settings.OLLAMA_MODEL,
+            messages=[{'role': 'user', 'content': 'test'}],
+            options={'num_predict': 1}
+        )
+        logger.info("✅ Modelo cargado en memoria")
+    except Exception as e:
+        logger.warning("⚠️  No se pudo pre-cargar modelo Ollama", extra={"error": str(e)})
+
     # Backup inicial al arrancar el servidor
     _mgr = BackupManager(max_backups=settings.MAX_BACKUPS)
     try:
@@ -465,6 +477,15 @@ class ProductCreate(BaseModel):
         if v > 100_000:
             raise ValueError("El stock no puede superar 100,000 unidades")
         return v
+
+    @field_validator("image_url")
+    @classmethod
+    def image_url_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = v.strip()
+            if v and not (v.startswith("http://") or v.startswith("https://")):
+                raise ValueError("image_url debe ser una URL válida (http/https)")
+        return v or None
 
 
 class MessageRequest(BaseModel):
@@ -580,15 +601,15 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
         is_returning = bool(conversation_history)  # tiene historial → cliente recurrente
         if is_returning:
             greetings = [
-                f"¡{saludo}! 👋 Qué bueno verte de vuelta. Soy Favio. ¿Volvemos con los zapatos? 😄 ¿En qué te ayudo hoy?",
-                f"¡{saludo}! 😊 ¡Bienvenido de nuevo a Fresh Boy Store! ¿Qué necesitas esta vez?",
+                f"¡{saludo}! 👋 Qué bueno verte de vuelta. Soy {bot_config.BOT_NAME}. ¿Volvemos con los zapatos? 😄 ¿En qué te ayudo hoy?",
+                f"¡{saludo}! 😊 ¡Bienvenido de nuevo a {bot_config.STORE_NAME}! ¿Qué necesitas esta vez?",
                 f"¡{saludo}! Qué gusto que regreses. 🙌 Cuéntame, ¿qué tienes hoy para cuidar?",
             ]
         else:
             greetings = [
-                f"¡{saludo}! 👋 Soy Favio de *Fresh Boy Store*. Me especializo en productos de cuidado de calzado. Escribe *#catalogo* para ver todo lo que tenemos. ¿Qué tipo de zapatos quieres cuidar?",
-                f"¡{saludo}! 😊 Bienvenido a *Fresh Boy Store*. Tenemos todo para que tus zapatos luzcan como nuevos. ¿Con qué te puedo ayudar hoy?",
-                f"¡{saludo}! Mucho gusto, soy Favio. 🎯 Cuéntame, ¿qué zapatos quieres recuperar?",
+                f"¡{saludo}! 👋 Soy {bot_config.BOT_NAME} de *{bot_config.STORE_NAME}*. Me especializo en productos de cuidado de calzado. Escribe *#catalogo* para ver todo lo que tenemos. ¿Qué tipo de zapatos quieres cuidar?",
+                f"¡{saludo}! 😊 Bienvenido a *{bot_config.STORE_NAME}*. Tenemos todo para que tus zapatos luzcan como nuevos. ¿Con qué te puedo ayudar hoy?",
+                f"¡{saludo}! Mucho gusto, soy {bot_config.BOT_NAME}. 🎯 Cuéntame, ¿qué zapatos quieres recuperar?",
             ]
         return random.choice(greetings)
 
@@ -612,18 +633,18 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
     # Objeción de precio: reconocer y redirigir
     if intent["type"] == "price_objection":
         return (
-            "Entiendo perfectamente, el presupuesto importa. 💰 "
-            "Lo bueno es que tenemos opciones desde S/ 10, y comprar 2 productos te da 10% de descuento. "
-            "¿Me cuentas qué zapatos tienes y cuánto quieres invertir? Así te busco lo más conveniente. 😊"
+            f"Entiendo perfectamente, el presupuesto importa. 💰 "
+            f"Tenemos opciones para todos los bolsillos, y comprar 2 productos te da {bot_config.DISCOUNT_TWO_PRODUCTS}% de descuento. "
+            f"¿Me cuentas qué zapatos tienes y cuánto quieres invertir? Así te busco lo más conveniente. 😊"
         )
     
     # Enriquecer la lista de productos con recomendaciones inteligentes para el mensaje actual
     recommended = get_product_recommendations(message, products)
-    all_products = products[:8]
+    all_products = products[:bot_config.AI_MAX_PRODUCTS_CONTEXT]
 
     def fmt_product(p: Product) -> str:
         stock_label = "✅ disponible" if p.stock > 5 else (f"⚠️ últimas {p.stock} unidades" if p.stock > 0 else "❌ agotado")
-        return f"  • *{p.name}* — S/ {p.price / 100:.2f} | {stock_label}\n    {p.description[:90]}"
+        return f"  • *{p.name}* — S/ {p.price / 100:.2f} | {stock_label}\n    {p.description[:bot_config.AI_DESC_MAX_CHARS]}"
 
     if recommended:
         rec_context = "PRODUCTOS RECOMENDADOS para este cliente:\n" + "\n".join(fmt_product(p) for p in recommended)
@@ -635,10 +656,10 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
     else:
         all_context = "Sin productos en stock en este momento."
 
-    # Historial: últimos 6 mensajes con etiqueta
+    # Historial: últimos N mensajes con etiqueta (más antiguos primero)
     history_context = ""
     if conversation_history:
-        history_context = "\n\n📜 HISTORIAL RECIENTE (últimos mensajes):\n" + "\n".join(conversation_history[-6:])
+        history_context = f"\n\n📜 HISTORIAL RECIENTE (últimos mensajes):\n" + "\n".join(conversation_history[-bot_config.HISTORY_MESSAGES_LIMIT:])
 
     # Carrito activo
     cart_context = ""
@@ -654,7 +675,7 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
 
     saludo_hora = get_greeting_by_time()
 
-    system_prompt = f"""Eres *Favio*, el vendedor estrella de *Fresh Boy Store* con 5 años de experiencia en cuidado de calzado.
+    system_prompt = f"""Eres *{bot_config.BOT_NAME}*, el vendedor estrella de *{bot_config.STORE_NAME}* con 5 años de experiencia en cuidado de calzado.
 
 🧠 TU PERSONALIDAD:
 - Eres cálido, cercano y carismático — como hablar con un amigo que sabe mucho de zapatos
@@ -690,10 +711,10 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
 - *#ayuda* → más ayuda
 
 INFO TIENDA:
-- Envíos: Lima 24-48h (S/ 10) | Provincias 3-5 días (S/ 15) | Gratis sobre S/ 80
+- Envíos: Lima 24-48h ({bot_config.SHIPPING_LIMA_PRICE}) | Provincias 3-5 días ({bot_config.SHIPPING_PROVINCES_PRICE}) | Gratis sobre {bot_config.SHIPPING_FREE_THRESHOLD}
 - Pagos: Yape, Plin, transferencia BCP/Interbank, efectivo
 - Garantía: 30 días satisfacción garantizada
-- Horario: {saludo_hora} — Lun-Vie 9am-8pm | Sáb 10am-6pm
+- Horario: {saludo_hora} — {bot_config.SCHEDULE_WEEKDAY} | {bot_config.SCHEDULE_SATURDAY}
 {history_context}{cart_context}{intent_hint}
 
 ✍️ ESTILO DE RESPUESTA:
@@ -745,7 +766,26 @@ EJEMPLOS DE BUENAS RESPUESTAS:
         elapsed = time.time() - start_time
         ai_message = response['message']['content'].strip()
 
-        # Post-procesado según intent
+        # Fallback si Ollama devuelve respuesta vacía o solo espacios
+        if not ai_message:
+            log_with_context(logger, "warning", "Ollama devolvió respuesta vacía")
+            return (
+                "Disculpa, no pude procesar eso bien. 😅 "
+                "Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos."
+            )
+
+        # Truncar respuesta excesivamente larga al último punto o salto de línea antes del límite
+        max_chars = bot_config.AI_RESPONSE_MAX_CHARS
+        if len(ai_message) > max_chars:
+            truncated = ai_message[:max_chars]
+            # Buscar el último punto o salto de línea para corte limpio
+            last_break = max(truncated.rfind('.'), truncated.rfind('\n'))
+            if last_break > max_chars // 2:
+                ai_message = truncated[:last_break + 1].strip()
+            else:
+                ai_message = truncated.rstrip() + "..."
+
+        # Post-procesado según intent (evitar sufijos duplicados)
         if intent["type"] == "purchase" and "#catalogo" not in ai_message and "agregar" not in ai_message.lower():
             if "?" not in ai_message:
                 ai_message += " Escribe *#catalogo* para verlos todos."
@@ -767,6 +807,20 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     """Procesar mensaje con IA, comandos y manejo de carrito/pedidos"""
 
     log_with_context(logger, "info", "Nuevo mensaje recibido", phone=request.phone[-4:], message=request.message[:100])
+
+    # Rate limiting: evitar procesamiento doble si el mismo número envía mensajes consecutivos
+    now = time.time()
+    # Limpiar entradas antiguas (> 5 minutos) para evitar memory leak
+    _COOLDOWN_CLEANUP_SECONDS = 300
+    stale_cutoff = now - _COOLDOWN_CLEANUP_SECONDS
+    stale_keys = [k for k, v in _message_cooldowns.items() if v < stale_cutoff]
+    for k in stale_keys:
+        del _message_cooldowns[k]
+
+    last_ts = _message_cooldowns.get(request.phone)
+    if last_ts is not None and (now - last_ts) < bot_config.MESSAGE_COOLDOWN_SECONDS:
+        raise RateLimitException("Un momento, estoy procesando tu mensaje anterior 🙏")
+    _message_cooldowns[request.phone] = now
 
     # 1. Buscar o crear conversación
     conversation = db.query(Conversation).filter(
@@ -851,34 +905,35 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                 )
             else:
                 # Crear pedido
-                order = Order(
-                    conversation_id=conversation.id,
-                    phone=request.phone,
-                    total=total,
-                    status="pending"
-                )
-                db.add(order)
-                db.commit()
-                db.refresh(order)
+                with handle_db_errors():
+                    order = Order(
+                        conversation_id=conversation.id,
+                        phone=request.phone,
+                        total=total,
+                        status="pending"
+                    )
+                    db.add(order)
+                    db.commit()
+                    db.refresh(order)
 
-                # Crear items del pedido y descontar stock
-                for item in cart_items:
-                    product = products_dict.get(item.product_id)
-                    if product:
-                        db.add(OrderItem(
-                            order_id=order.id,
-                            product_id=product.id,
-                            product_name=product.name,
-                            product_price=product.price,
-                            quantity=item.quantity
-                        ))
-                        product.stock -= item.quantity
+                    # Crear items del pedido y descontar stock
+                    for item in cart_items:
+                        product = products_dict.get(item.product_id)
+                        if product:
+                            db.add(OrderItem(
+                                order_id=order.id,
+                                product_id=product.id,
+                                product_name=product.name,
+                                product_price=product.price,
+                                quantity=item.quantity
+                            ))
+                            product.stock -= item.quantity
 
-                # Vaciar carrito
-                db.query(CartItem).filter(
-                    CartItem.conversation_id == conversation.id
-                ).delete()
-                db.commit()
+                    # Vaciar carrito
+                    db.query(CartItem).filter(
+                        CartItem.conversation_id == conversation.id
+                    ).delete()
+                    db.commit()
 
                 ai_response = (
                     f"✅ *¡PEDIDO CONFIRMADO!*\n"
@@ -978,10 +1033,10 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     if ai_response is None:
         recent_messages = db.query(Message).filter(
             Message.conversation_id == conversation.id
-        ).order_by(Message.created_at.desc()).limit(6).all()
+        ).order_by(Message.created_at.desc()).limit(bot_config.HISTORY_MESSAGES_LIMIT).all()
 
         conversation_history = [
-            f"{'Cliente' if msg.from_customer else 'Favio'}: {msg.content}"
+            f"{'Cliente' if msg.from_customer else bot_config.BOT_NAME}: {msg.content}"
             for msg in reversed(recent_messages)
         ]
 
@@ -1034,13 +1089,17 @@ def get_conversations(db: Session = Depends(get_db), _: str = Depends(verify_api
 @app.get("/api/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: int, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Obtener todos los mensajes de una conversación específica"""
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id
+    ).first()
+
+    if not conversation:
+        raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
+
     messages = db.query(Message).filter(
         Message.conversation_id == conversation_id
     ).order_by(Message.created_at.asc()).all()
-    
-    if not messages:
-        raise HTTPException(status_code=404, detail="Conversación no encontrada o sin mensajes")
-    
+
     return messages
 
 @app.patch("/api/conversations/{conversation_id}/toggle-bot")
@@ -1087,14 +1146,17 @@ def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get
     ).first()
 
     if existing:
-        existing.quantity += item.quantity
+        with handle_db_errors():
+            existing.quantity += item.quantity
+            db.commit()
     else:
-        db.add(CartItem(
-            conversation_id=conversation.id,
-            product_id=item.product_id,
-            quantity=item.quantity
-        ))
-    db.commit()
+        with handle_db_errors():
+            db.add(CartItem(
+                conversation_id=conversation.id,
+                product_id=item.product_id,
+                quantity=item.quantity
+            ))
+            db.commit()
     return {"message": f"{product.name} agregado al carrito", "product": product.name, "quantity": item.quantity}
 
 
@@ -1213,16 +1275,17 @@ def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = 
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-    # Restaurar stock si se cancela
-    if update.status == "cancelled" and order.status != "cancelled":
-        for item in db.query(OrderItem).filter(OrderItem.order_id == order_id).all():
-            product = db.query(Product).filter(Product.id == item.product_id).first()
-            if product:
-                product.stock += item.quantity
+    with handle_db_errors():
+        # Restaurar stock si se cancela
+        if update.status == "cancelled" and order.status != "cancelled":
+            for item in db.query(OrderItem).filter(OrderItem.order_id == order_id).all():
+                product = db.query(Product).filter(Product.id == item.product_id).first()
+                if product:
+                    product.stock += item.quantity
 
-    order.status = update.status
-    order.updated_at = datetime.utcnow()
-    db.commit()
+        order.status = update.status
+        order.updated_at = datetime.utcnow()
+        db.commit()
 
     status_labels = {
         "pending": "Pendiente", "confirmed": "Confirmado",
