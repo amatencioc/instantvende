@@ -48,8 +48,8 @@ module.exports = {
     },
     {
       name: 'instantvende-admin',
-      script: 'npx',
-      args: 'vite preview --port 3000 --host',
+      script: 'npm',
+      args: 'run preview',
       cwd: './frontend',
       env: {
         NODE_ENV: 'production'

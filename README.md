@@ -6,6 +6,91 @@ InstantVende permite a tiendas pequeñas tener un **vendedor automático en What
 
 ---
 
+## 🚀 Quick Start — Levantar todo con un comando
+
+> **Prerequisitos:** Python 3.10+, Node.js 18+, [Ollama](https://ollama.com) instalado y corriendo con `phi3:mini`
+
+### Windows
+
+```bat
+start.bat
+```
+
+### Linux / Mac
+
+```bash
+chmod +x start.sh   # solo la primera vez
+./start.sh
+```
+
+El script hace automáticamente:
+1. Instala PM2 si no está presente
+2. Crea los archivos `.env` desde los ejemplos si no existen
+3. Instala las dependencias de WhatsApp (`npm install`)
+4. Compila el panel de administración (`npm run build`)
+5. Inicia los 3 servicios con PM2 (auto-restart incluido)
+
+Una vez corriendo, abre:
+
+| Servicio | URL |
+|----------|-----|
+| 🤖 **Bot WhatsApp** | Escanea el QR en la terminal (`pm2 logs instantvende-wa`) |
+| 🐍 **API Backend** | http://localhost:8000 |
+| 📖 **API Docs** | http://localhost:8000/docs |
+| 🖥️ **Panel Admin** | http://localhost:3000 |
+
+> **Primera vez:** Al arrancar el bot de WhatsApp, aparece un **código QR** en los logs.
+> Abre WhatsApp → Configuración → Dispositivos vinculados → Vincular dispositivo y escanéalo.
+> ```bash
+> pm2 logs instantvende-wa
+> ```
+
+### Detener todo
+
+```bat
+# Windows
+stop.bat
+
+# Linux / Mac
+./stop.sh
+```
+
+---
+
+### Configuración inicial (solo la primera vez)
+
+Después de que el script cree los `.env`, **edítalos antes de continuar**:
+
+```bash
+# 1. Genera una clave segura
+python -c "import secrets; print(secrets.token_hex(32))"
+
+# 2. Pega el valor en backend/.env
+#    API_SECRET_KEY=<tu_clave>
+
+# 3. Pega el mismo valor en whatsapp/.env
+#    BACKEND_API_KEY=<tu_clave>
+```
+
+El archivo `frontend/.env` apunta a `http://localhost:8000` por defecto — no necesita cambios en desarrollo.
+
+---
+
+### Instalar Ollama y el modelo de IA (si aún no lo tienes)
+
+```bash
+# Mac/Linux
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Descargar el modelo (≈2GB — solo una vez)
+ollama pull phi3:mini
+
+# Verificar que Ollama esté corriendo
+ollama list
+```
+
+---
+
 ## ✨ Funcionalidades
 
 | Módulo | Descripción |
