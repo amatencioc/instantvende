@@ -1542,5 +1542,5 @@ def reset_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("🚀 InstantVende Backend iniciando", host="0.0.0.0", port=8000)
+    log_with_context(logger, "info", "🚀 InstantVende Backend iniciando", host="0.0.0.0", port=8000)
     uvicorn.run(app, host="0.0.0.0", port=8000)
