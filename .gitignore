@@ -1,0 +1,20 @@
+﻿# ===== BACKEND (Python) =====
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.db
+backend/venv/
+backend/.env
+backend/.env.*
+
+# ===== WHATSAPP (Node.js) =====
+whatsapp/node_modules/
+whatsapp/.wwebjs_cache/
+whatsapp/whatsapp-session/
+whatsapp/.env
+whatsapp/.env.*
+
+# ===== General =====
+.DS_Store
+Thumbs.db
+*.log
