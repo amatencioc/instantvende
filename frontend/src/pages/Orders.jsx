@@ -123,12 +123,12 @@ export default function Orders() {
               onClick={() => setFilter(f.id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 filter === f.id
-                  ? 'bg-violet-600/30 text-violet-400 border border-violet-500/30'
-                  : 'text-white/50 hover:text-white hover:bg-white/5'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-600 bg-slate-100 hover:bg-slate-200'
               }`}
             >
               {f.label}
-              <span className="ml-1.5 text-[10px] opacity-60">
+              <span className="ml-1.5 text-[10px] opacity-70">
                 ({f.id === 'all' ? orders.length : orders.filter((o) => o.status === f.id).length})
               </span>
             </button>
@@ -148,9 +148,9 @@ export default function Orders() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/10">
+                <tr className="border-b border-slate-200">
                   {['# Pedido', 'Cliente', 'Total', 'Estado', 'Productos', 'Fecha', 'Acciones'].map((h) => (
-                    <th key={h} className="text-left py-3 px-4 text-white/40 font-medium text-xs uppercase tracking-wider">
+                    <th key={h} className="text-left py-3 px-4 text-slate-500 font-medium text-xs uppercase tracking-wider">
                       {h}
                     </th>
                   ))}
@@ -160,14 +160,14 @@ export default function Orders() {
                 {filtered.map((order, idx) => (
                   <tr
                     key={order.id}
-                    className={`border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors ${
-                      idx % 2 !== 0 ? 'bg-white/[0.02]' : ''
+                    className={`border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors ${
+                      idx % 2 !== 0 ? 'bg-slate-50/50' : ''
                     }`}
                     onClick={() => setDetail(order)}
                   >
-                    <td className="py-3 px-4 text-white/60 font-mono text-xs">#{order.id}</td>
-                    <td className="py-3 px-4 text-white/80">{maskPhone(order.phone_number)}</td>
-                    <td className="py-3 px-4 text-white font-medium">
+                    <td className="py-3 px-4 text-slate-500 font-mono text-xs">#{order.id}</td>
+                    <td className="py-3 px-4 text-slate-700">{maskPhone(order.phone_number)}</td>
+                    <td className="py-3 px-4 text-slate-800 font-medium">
                       S/ {((order.total || 0) / 100).toFixed(2)}
                     </td>
                     <td className="py-3 px-4">
@@ -175,10 +175,10 @@ export default function Orders() {
                         {STATUS_LABEL[order.status] || order.status}
                       </Badge>
                     </td>
-                    <td className="py-3 px-4 text-white/50 text-xs max-w-[180px] truncate">
+                    <td className="py-3 px-4 text-slate-500 text-xs max-w-[180px] truncate">
                       {summarizeItems(order.items || order.order_items)}
                     </td>
-                    <td className="py-3 px-4 text-white/40 text-xs">
+                    <td className="py-3 px-4 text-slate-400 text-xs">
                       {order.created_at
                         ? new Date(order.created_at).toLocaleDateString('es-PE')
                         : '—'}
@@ -217,26 +217,26 @@ export default function Orders() {
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
-                <p className="text-white/40 text-xs">Cliente</p>
-                <p className="text-white font-medium">{maskPhone(detail.phone_number)}</p>
+                <p className="text-slate-500 text-xs">Cliente</p>
+                <p className="text-slate-800 font-medium">{maskPhone(detail.phone_number)}</p>
               </div>
               <div>
-                <p className="text-white/40 text-xs">Estado</p>
+                <p className="text-slate-500 text-xs">Estado</p>
                 <Badge variant={STATUS_VARIANT[detail.status] || 'gray'}>
                   {STATUS_LABEL[detail.status] || detail.status}
                 </Badge>
               </div>
               <div>
-                <p className="text-white/40 text-xs">Fecha</p>
-                <p className="text-white">
+                <p className="text-slate-500 text-xs">Fecha</p>
+                <p className="text-slate-800">
                   {detail.created_at
                     ? new Date(detail.created_at).toLocaleString('es-PE')
                     : '—'}
                 </p>
               </div>
               <div>
-                <p className="text-white/40 text-xs">Total</p>
-                <p className="text-white font-bold text-lg">
+                <p className="text-slate-500 text-xs">Total</p>
+                <p className="text-slate-800 font-bold text-lg">
                   S/ {((detail.total || 0) / 100).toFixed(2)}
                 </p>
               </div>
@@ -245,20 +245,20 @@ export default function Orders() {
             {/* Items */}
             {(detail.items || detail.order_items || []).length > 0 && (
               <div>
-                <p className="text-white/50 text-xs mb-2">Productos</p>
+                <p className="text-slate-500 text-xs mb-2">Productos</p>
                 <div className="flex flex-col gap-2">
                   {(detail.items || detail.order_items || []).map((item, i) => (
                     <div
                       key={i}
-                      className="flex items-center justify-between py-2 border-b border-white/5"
+                      className="flex items-center justify-between py-2 border-b border-slate-100"
                     >
                       <div>
-                        <p className="text-white text-sm">{item.product_name || item.name || 'Producto'}</p>
-                        <p className="text-white/40 text-xs">
+                        <p className="text-slate-800 text-sm">{item.product_name || item.name || 'Producto'}</p>
+                        <p className="text-slate-500 text-xs">
                           S/ {((item.unit_price || item.price || 0) / 100).toFixed(2)} × {item.quantity}
                         </p>
                       </div>
-                      <span className="text-white font-medium">
+                      <span className="text-slate-700 font-medium">
                         S/ {(((item.unit_price || item.price || 0) * item.quantity) / 100).toFixed(2)}
                       </span>
                     </div>
@@ -269,8 +269,8 @@ export default function Orders() {
 
             {detail.notes && (
               <div>
-                <p className="text-white/40 text-xs mb-1">Notas</p>
-                <p className="text-white/70 text-sm bg-white/5 p-3 rounded-xl">{detail.notes}</p>
+                <p className="text-slate-500 text-xs mb-1">Notas</p>
+                <p className="text-slate-600 text-sm bg-slate-50 border border-slate-200 p-3 rounded-xl">{detail.notes}</p>
               </div>
             )}
 

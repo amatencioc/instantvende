@@ -12,19 +12,19 @@ import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 function Section({ title, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="glass overflow-hidden">
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between p-5 text-left"
       >
-        <span className="font-semibold text-white">{title}</span>
+        <span className="font-semibold text-slate-800">{title}</span>
         <ChevronDown
           size={16}
-          className={`text-white/50 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+          className={`text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
         />
       </button>
       {open && (
-        <div className="px-5 pb-5 border-t border-white/10 pt-5 flex flex-col gap-4">
+        <div className="px-5 pb-5 border-t border-slate-200 pt-5 flex flex-col gap-4">
           {children}
         </div>
       )}
@@ -51,10 +51,10 @@ function TagsInput({ value = [], onChange, placeholder }) {
         {value.map((tag) => (
           <span
             key={tag}
-            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs bg-violet-600/20 text-violet-400 border border-violet-500/30"
+            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs bg-indigo-100 text-indigo-700 border border-indigo-200"
           >
             {tag}
-            <button onClick={() => remove(tag)} className="hover:text-white">×</button>
+            <button onClick={() => remove(tag)} className="hover:text-indigo-900">×</button>
           </span>
         ))}
       </div>
@@ -64,7 +64,7 @@ function TagsInput({ value = [], onChange, placeholder }) {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
           placeholder={placeholder}
-          className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-violet-500 transition-all"
+          className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
         />
         <Button variant="secondary" onClick={add} type="button" className="!py-2">+</Button>
       </div>
@@ -86,8 +86,8 @@ function ListInput({ value = [], onChange, placeholder }) {
     <div className="flex flex-col gap-2">
       {value.map((item, i) => (
         <div key={i} className="flex gap-2">
-          <span className="flex-1 bg-white/5 border border-white/5 rounded-xl px-3 py-2 text-sm text-white/80 truncate">{item}</span>
-          <button onClick={() => remove(i)} className="text-white/30 hover:text-red-400 px-2 transition-colors">×</button>
+          <span className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 truncate">{item}</span>
+          <button onClick={() => remove(i)} className="text-slate-300 hover:text-red-500 px-2 transition-colors">×</button>
         </div>
       ))}
       <div className="flex gap-2">
@@ -96,7 +96,7 @@ function ListInput({ value = [], onChange, placeholder }) {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
           placeholder={placeholder}
-          className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-violet-500 transition-all"
+          className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
         />
         <Button variant="secondary" onClick={add} type="button" className="!py-2">+</Button>
       </div>
@@ -220,13 +220,13 @@ export default function BotProfile() {
       {/* Action bar */}
       <Card className="flex flex-wrap gap-3 items-center justify-between">
         <div className="flex items-center gap-2">
-          <Bot size={20} className="text-violet-400" />
-          <span className="font-semibold text-white">Editor del Perfil del Bot</span>
+          <Bot size={20} className="text-indigo-600" />
+          <span className="font-semibold text-slate-800">Editor del Perfil del Bot</span>
         </div>
         <div className="flex gap-2 flex-wrap">
           <label className="cursor-pointer">
             <input type="file" accept=".json" onChange={handleImport} className="hidden" />
-            <span className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 text-white/80 hover:bg-white/15 border border-white/10 text-sm font-medium transition-all cursor-pointer">
+            <span className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 text-sm font-medium transition-all cursor-pointer">
               <Upload size={14} /> Importar
             </span>
           </label>
@@ -251,7 +251,7 @@ export default function BotProfile() {
           <Input label="Estilo de lenguaje" value={get('bot.language_style')} onChange={(e) => set('bot.language_style', e.target.value)} />
         </div>
         <div>
-          <label className="text-sm font-medium text-white/70 block mb-1.5">Palabras características</label>
+          <label className="text-sm font-medium text-slate-700 block mb-1.5">Palabras características</label>
           <TagsInput
             value={get('bot.characteristic_words', [])}
             onChange={(v) => set('bot.characteristic_words', v)}
@@ -259,8 +259,8 @@ export default function BotProfile() {
           />
         </div>
         <div>
-          <label className="text-sm font-medium text-white/70 block mb-2">
-            Máximo emojis por respuesta: <span className="text-violet-400">{get('bot.max_emojis', 3)}</span>
+          <label className="text-sm font-medium text-slate-700 block mb-2">
+            Máximo emojis por respuesta: <span className="text-indigo-600">{get('bot.max_emojis', 3)}</span>
           </label>
           <input
             type="range"
@@ -268,7 +268,7 @@ export default function BotProfile() {
             max={5}
             value={get('bot.max_emojis', 3)}
             onChange={(e) => set('bot.max_emojis', parseInt(e.target.value))}
-            className="w-full accent-violet-500"
+            className="w-full accent-indigo-600"
           />
         </div>
       </Section>
@@ -292,14 +292,14 @@ export default function BotProfile() {
           <Input label="Sábados" value={get('schedule.saturday')} onChange={(e) => set('schedule.saturday', e.target.value)} />
           <Input label="Domingos" value={get('schedule.sunday')} onChange={(e) => set('schedule.sunday', e.target.value)} />
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-white/70">Zona horaria</label>
+            <label className="text-sm font-medium text-slate-700">Zona horaria</label>
             <select
               value={get('schedule.timezone', 'America/Lima')}
               onChange={(e) => set('schedule.timezone', e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white outline-none focus:border-violet-500 transition-all"
+              className="bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
             >
               {['America/Lima', 'America/Bogota', 'America/Santiago', 'America/Buenos_Aires', 'America/Mexico_City', 'America/Caracas'].map((tz) => (
-                <option key={tz} value={tz} style={{ background: '#0a0a0f' }}>{tz}</option>
+                <option key={tz} value={tz} style={{ background: '#ffffff' }}>{tz}</option>
               ))}
             </select>
           </div>
@@ -334,7 +334,7 @@ export default function BotProfile() {
           />
         </div>
         <div>
-          <label className="text-sm font-medium text-white/70 block mb-1.5">Transportistas</label>
+          <label className="text-sm font-medium text-slate-700 block mb-1.5">Transportistas</label>
           <TagsInput
             value={get('shipping.carriers', [])}
             onChange={(v) => set('shipping.carriers', v)}
@@ -373,17 +373,17 @@ export default function BotProfile() {
           { key: 'messages.rate_limit', label: 'Mensaje de límite de velocidad' },
         ].map(({ key, label }) => (
           <div key={key} className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-white/70">{label}</label>
+            <label className="text-sm font-medium text-slate-700">{label}</label>
             <textarea
               rows={2}
               value={get(key)}
               onChange={(e) => set(key, e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-white/30 outline-none focus:border-violet-500 transition-all resize-none text-sm"
+              className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none text-sm"
             />
           </div>
         ))}
         <div>
-          <label className="text-sm font-medium text-white/70 block mb-1.5">Saludos (clientes nuevos)</label>
+          <label className="text-sm font-medium text-slate-700 block mb-1.5">Saludos (clientes nuevos)</label>
           <ListInput
             value={get('messages.greetings_new', [])}
             onChange={(v) => set('messages.greetings_new', v)}
@@ -391,7 +391,7 @@ export default function BotProfile() {
           />
         </div>
         <div>
-          <label className="text-sm font-medium text-white/70 block mb-1.5">Saludos (clientes recurrentes)</label>
+          <label className="text-sm font-medium text-slate-700 block mb-1.5">Saludos (clientes recurrentes)</label>
           <ListInput
             value={get('messages.greetings_returning', [])}
             onChange={(v) => set('messages.greetings_returning', v)}
@@ -399,7 +399,7 @@ export default function BotProfile() {
           />
         </div>
         <div>
-          <label className="text-sm font-medium text-white/70 block mb-1.5">Despedidas</label>
+          <label className="text-sm font-medium text-slate-700 block mb-1.5">Despedidas</label>
           <ListInput
             value={get('messages.farewells', [])}
             onChange={(v) => set('messages.farewells', v)}
@@ -411,8 +411,8 @@ export default function BotProfile() {
       {/* Section 7 — AI params */}
       <Section title="7. Parámetros de IA">
         <div className="flex flex-col gap-1">
-          <label className="text-sm font-medium text-white/70">
-            Temperature: <span className="text-violet-400">{Number(get('ai.temperature', 0.7)).toFixed(1)}</span>
+          <label className="text-sm font-medium text-slate-700">
+            Temperature: <span className="text-indigo-600">{Number(get('ai.temperature', 0.7)).toFixed(1)}</span>
           </label>
           <input
             type="range"
@@ -421,12 +421,12 @@ export default function BotProfile() {
             step={0.1}
             value={get('ai.temperature', 0.7)}
             onChange={(e) => set('ai.temperature', parseFloat(e.target.value))}
-            className="w-full accent-violet-500"
+            className="w-full accent-indigo-600"
           />
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-sm font-medium text-white/70">
-            Max tokens: <span className="text-violet-400">{get('ai.num_predict', 120)}</span>
+          <label className="text-sm font-medium text-slate-700">
+            Max tokens: <span className="text-indigo-600">{get('ai.num_predict', 120)}</span>
           </label>
           <input
             type="range"
@@ -435,7 +435,7 @@ export default function BotProfile() {
             step={5}
             value={get('ai.num_predict', 120)}
             onChange={(e) => set('ai.num_predict', parseInt(e.target.value))}
-            className="w-full accent-violet-500"
+            className="w-full accent-indigo-600"
           />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -459,12 +459,12 @@ export default function BotProfile() {
       {/* Section 8 — System prompt */}
       <Section title="8. System Prompt">
         <div className="flex flex-col gap-1">
-          <label className="text-sm font-medium text-white/70">Template del system prompt</label>
+          <label className="text-sm font-medium text-slate-700">Template del system prompt</label>
           <textarea
             rows={10}
             value={get('system_prompt_template', '')}
             onChange={(e) => set('system_prompt_template', e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white/80 placeholder-white/30 outline-none focus:border-violet-500 transition-all resize-y text-xs font-mono"
+            className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-700 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-y text-xs font-mono"
             placeholder="Usa {bot_name}, {store_name}, etc. como variables de plantilla..."
           />
         </div>

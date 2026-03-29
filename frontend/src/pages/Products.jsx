@@ -126,13 +126,13 @@ export default function Products() {
       {/* Header */}
       <div className="flex flex-wrap gap-3 items-center justify-between">
         <div className="relative flex-1 min-w-[200px]">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             placeholder="Buscar producto..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-violet-500 transition-all"
+            className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
           />
         </div>
         <Button onClick={openCreate}>
@@ -153,10 +153,10 @@ export default function Products() {
           {filtered.map((product) => (
             <div
               key={product.id}
-              className="glass flex flex-col gap-3 overflow-hidden hover:scale-[1.02] transition-transform duration-200"
+              className="bg-white border border-slate-200 rounded-xl shadow-sm flex flex-col gap-3 overflow-hidden hover:shadow-md transition-shadow duration-200"
             >
               {/* Image */}
-              <div className="w-full h-40 bg-gradient-to-br from-violet-600/20 to-cyan-500/20 flex items-center justify-center overflow-hidden">
+              <div className="w-full h-40 bg-slate-100 flex items-center justify-center overflow-hidden">
                 {product.image_url ? (
                   <img
                     src={product.image_url}
@@ -165,24 +165,24 @@ export default function Products() {
                     onError={(e) => { e.target.style.display = 'none' }}
                   />
                 ) : (
-                  <Package size={40} className="text-white/20" />
+                  <Package size={40} className="text-slate-300" />
                 )}
               </div>
 
               <div className="p-4 flex flex-col gap-2">
-                <h3 className="text-white font-semibold text-sm leading-snug">{product.name}</h3>
+                <h3 className="text-slate-800 font-semibold text-sm leading-snug">{product.name}</h3>
                 {product.description && (
-                  <p className="text-white/40 text-xs line-clamp-2">{product.description}</p>
+                  <p className="text-slate-400 text-xs line-clamp-2">{product.description}</p>
                 )}
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-white font-bold">
+                  <span className="text-slate-800 font-bold">
                     S/ {(product.price / 100).toFixed(2)}
                   </span>
                   <Badge variant={stockVariant(product.stock)}>
                     {stockLabel(product.stock)}
                   </Badge>
                 </div>
-                <p className="text-white/30 text-xs">Stock: {product.stock} unidades</p>
+                <p className="text-slate-400 text-xs">Stock: {product.stock} unidades</p>
 
                 <div className="flex gap-2 mt-1">
                   <Button
@@ -221,11 +221,11 @@ export default function Products() {
           />
 
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-white/70">Descripción</label>
+            <label className="text-sm font-medium text-slate-700">Descripción</label>
             <textarea
               placeholder="Descripción del producto..."
               rows={3}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-white/30 outline-none focus:border-violet-500 transition-all resize-none text-sm"
+              className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none text-sm"
               {...register('description', { maxLength: 2000 })}
             />
           </div>
@@ -257,7 +257,7 @@ export default function Products() {
           />
 
           {imageUrl && (
-            <div className="w-full h-28 rounded-xl overflow-hidden bg-white/5 border border-white/10">
+            <div className="w-full h-28 rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
               <img
                 src={imageUrl}
                 alt="Preview"

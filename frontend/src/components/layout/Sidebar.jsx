@@ -40,7 +40,7 @@ export default function Sidebar() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 z-20 lg:hidden"
+            className="fixed inset-0 bg-black/40 z-20 lg:hidden"
             onClick={toggleSidebar}
           />
         )}
@@ -50,16 +50,11 @@ export default function Sidebar() {
         initial={false}
         animate={{ width: sidebarOpen ? 240 : 72 }}
         transition={{ duration: 0.3, ease: 'easeInOut' }}
-        className="fixed left-0 top-0 h-full z-30 flex flex-col overflow-hidden"
-        style={{
-          background: 'rgba(10,10,20,0.95)',
-          backdropFilter: 'blur(20px)',
-          borderRight: '1px solid rgba(255,255,255,0.08)',
-        }}
+        className="fixed left-0 top-0 h-full z-30 flex flex-col overflow-hidden bg-white border-r border-slate-200"
       >
         {/* Header */}
-        <div className="flex items-center gap-3 p-4 h-16 border-b border-white/8">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center flex-shrink-0">
+        <div className="flex items-center gap-3 p-4 h-16 border-b border-slate-200">
+          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0">
             <Zap size={16} className="text-white" />
           </div>
           <AnimatePresence>
@@ -68,7 +63,7 @@ export default function Sidebar() {
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
-                className="font-bold text-sm gradient-text whitespace-nowrap overflow-hidden"
+                className="font-bold text-sm text-slate-800 whitespace-nowrap overflow-hidden"
               >
                 InstantVende
               </motion.span>
@@ -76,7 +71,7 @@ export default function Sidebar() {
           </AnimatePresence>
           <motion.button
             onClick={toggleSidebar}
-            className="ml-auto p-1.5 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors flex-shrink-0"
+            className="ml-auto p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0"
             animate={{ rotate: sidebarOpen ? 0 : 180 }}
             transition={{ duration: 0.3 }}
           >
@@ -91,10 +86,10 @@ export default function Sidebar() {
               key={to}
               to={to}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group ${
+                `flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 ${
                   isActive
-                    ? 'bg-violet-600/20 text-violet-400 glow-violet'
-                    : 'text-white/50 hover:text-white hover:bg-white/5'
+                    ? 'bg-indigo-50 text-indigo-600 font-semibold'
+                    : 'text-slate-600 hover:bg-slate-50'
                 }`
               }
             >
@@ -107,7 +102,7 @@ export default function Sidebar() {
                         initial={{ opacity: 0, x: -8 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: -8 }}
-                        className="text-sm font-medium whitespace-nowrap overflow-hidden"
+                        className="text-sm whitespace-nowrap overflow-hidden"
                       >
                         {label}
                       </motion.span>
@@ -116,7 +111,7 @@ export default function Sidebar() {
                   {isActive && (
                     <motion.div
                       layoutId="activeIndicator"
-                      className="ml-auto w-1.5 h-1.5 rounded-full bg-violet-400 flex-shrink-0"
+                      className="ml-auto w-1.5 h-1.5 rounded-full bg-indigo-600 flex-shrink-0"
                     />
                   )}
                 </>
@@ -126,10 +121,10 @@ export default function Sidebar() {
         </nav>
 
         {/* Footer */}
-        <div className="p-2 border-t border-white/8">
+        <div className="p-2 border-t border-slate-200">
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-white/50 hover:text-red-400 hover:bg-red-500/10 transition-all duration-200"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-red-500 hover:bg-red-50 transition-all duration-200"
           >
             <LogOut size={18} className="flex-shrink-0" />
             <AnimatePresence>
