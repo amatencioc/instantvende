@@ -191,18 +191,10 @@ client.on('message', async (message) => {
             console.log('📤 Enviando...');
 
             // Dividir respuestas largas en múltiples mensajes
+            // Usamos sendMessage directo (más fiable que reply() que usa cita)
             const parts = splitMessage(data.reply, MAX_MSG_LENGTH);
-            for (let i = 0; i < parts.length; i++) {
-                try {
-                    if (i === 0) {
-                        await message.reply(parts[i]);
-                    } else {
-                        await chat.sendMessage(parts[i]);
-                    }
-                } catch (replyErr) {
-                    console.log('⚠️  message.reply() falló, usando sendMessage:', replyErr.message);
-                    await chat.sendMessage(parts[i]);
-                }
+            for (const part of parts) {
+                await chat.sendMessage(part);
             }
 
             // Si hay imagen del producto, enviarla también
