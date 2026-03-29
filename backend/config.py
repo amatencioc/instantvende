@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # === Ollama / IA ===
     OLLAMA_MODEL: str = "phi3:mini"
-    OLLAMA_TIMEOUT: int = 45
+    OLLAMA_TIMEOUT: int = 120  # phi3:mini en CPU puede tardar 60-120s en hardware sin GPU
 
     # === CORS ===
     CORS_ORIGINS: str = "*"
