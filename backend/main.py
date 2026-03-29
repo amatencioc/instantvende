@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import random
@@ -5,7 +6,7 @@ import time
 import threading
 import concurrent.futures
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -29,9 +30,9 @@ from exceptions import (
 from logger import setup_logger, log_with_context
 from backup import BackupManager, start_backup_scheduler
 from database import (
-    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem,
+    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem, BotProfile,
 )
-import bot_config
+from bot_profile_loader import get_profile, invalidate_cache, get_field, load_default_profile
 
 # ===== LOGGING =====
 logger = setup_logger()
@@ -47,65 +48,75 @@ if settings.OLLAMA_TIMEOUT < 10:
 _message_cooldowns: dict[str, float] = {}
 
 # ===== RESPUESTAS FRECUENTES (FAQ) =====
-FAQ_RESPONSES = {
-    "horario": f"""📅 *Horario de Atención:*
-• {bot_config.SCHEDULE_WEEKDAY}
-• {bot_config.SCHEDULE_SATURDAY}
-• {bot_config.SCHEDULE_SUNDAY}
 
-Si escribes fuera de horario, te respondo en cuanto abramos. ¿Te puedo ayudar en algo más? 😊""",
+def build_faq_responses(profile: dict) -> dict:
+    """Construye las respuestas FAQ usando el perfil activo del bot."""
+    s = profile.get("store", {})
+    sh = profile.get("shipping", {})
+    sc = profile.get("schedule", {})
+    d = profile.get("discounts", {})
+    w = profile.get("warranty", {})
+    p = profile.get("payments", {})
 
-    "envio": f"""🚚 *Envíos a todo el Perú:*
-• Lima Metropolitana: 24-48 horas — {bot_config.SHIPPING_LIMA_PRICE}
-• Provincias: 3-5 días hábiles — {bot_config.SHIPPING_PROVINCES_PRICE}
-• 🎁 *GRATIS* en compras mayores a {bot_config.SHIPPING_FREE_THRESHOLD}
+    payment_list = ", ".join(p.get("methods", ["Yape", "Plin"]))
+    carriers = " y ".join(sh.get("carriers", ["Olva Courier", "Shalom"]))
 
-Trabajamos con Olva Courier y Shalom. ¿A qué distrito te envío? 😊""",
-
-    "pago": """💳 *Métodos de Pago:*
-• 📱 Yape / Plin (¡el más rápido!)
-• 🏦 Transferencia — BCP / Interbank
-• 💵 Efectivo contraentrega (+S/ 5)
-
-Todos seguros y con confirmación al instante. ¿Con cuál te queda mejor? 😊""",
-
-    "garantia": """✅ *Garantía Fresh Boy:*
-• 30 días de satisfacción garantizada
-• Si no te gusta → te devolvemos el dinero
-• Productos 100% originales y de calidad
-• Cambios sin costo si hay defecto de fábrica
-
-¡Vendemos con confianza! ¿Qué producto te interesa? 😊""",
-
-    "ubicacion": f"""📍 *Encuéntranos:*
-{bot_config.STORE_NAME}
-{bot_config.STORE_ADDRESS}
-
-🛵 También hacemos delivery a todo Lima el mismo día (pedidos antes de las 5 PM).
-¿Prefieres venir o te lo enviamos? 😊""",
-
-    "descuento": f"""🏷️ *Descuentos y Promos:*
-• Compra 2 productos → {bot_config.DISCOUNT_TWO_PRODUCTS}% de descuento
-• Compra 3 o más → {bot_config.DISCOUNT_THREE_PLUS}% de descuento
-• 🎁 Envío gratis comprando más de {bot_config.SHIPPING_FREE_THRESHOLD}
-
-¡Arma tu kit y ahorra! Escribe *#catalogo* para ver los productos. 😊""",
-
-    "devolucion": """🔄 *Cambios y Devoluciones:*
-• Tienes *30 días* desde la compra
-• Producto en condiciones originales
-• Coordinamos el recojo sin costo
-• Reembolso al mismo método de pago
-
-Somos flex, ¡tu satisfacción es lo primero! ¿Tuviste algún problema con tu pedido?""",
-
-    "combo": """🎁 *Kits y Combos recomendados:*
-• 🥾 *Kit Cuero*: Crema + Cepillo = ahorra 10%
-• 👟 *Kit Zapatillas*: Limpiador + Protector = ahorra 10%
-• 🏆 *Kit Completo*: Los 4 básicos = ahorra 15%
-
-Escribe *#catalogo* para verlos todos y armar tu combo. 😊"""
-}
+    return {
+        "horario": (
+            f"📅 *Horario de Atención:*\n"
+            f"• {sc.get('weekday', '')}\n"
+            f"• {sc.get('saturday', '')}\n"
+            f"• {sc.get('sunday', '')}\n\n"
+            f"Si escribes fuera de horario, te respondo en cuanto abramos. ¿Te puedo ayudar en algo más? 😊"
+        ),
+        "envio": (
+            f"🚚 *Envíos a todo el Perú:*\n"
+            f"• Lima Metropolitana: {sh.get('lima_eta', '24-48h')} — {sh.get('lima_price_display', 'S/ 10')}\n"
+            f"• Provincias: {sh.get('provinces_eta', '3-5 días')} — {sh.get('provinces_price_display', 'S/ 15')}\n"
+            f"• 🎁 *GRATIS* en compras mayores a {sh.get('free_threshold_display', 'S/ 80')}\n\n"
+            f"Trabajamos con {carriers}. ¿A qué distrito te envío? 😊"
+        ),
+        "pago": (
+            f"💳 *Métodos de Pago:*\n"
+            f"• {payment_list}\n\n"
+            f"Todos seguros y con confirmación al instante. ¿Con cuál te queda mejor? 😊"
+        ),
+        "garantia": (
+            f"✅ *Garantía {s.get('name', 'de la tienda')}:*\n"
+            f"• {w.get('days', 30)} días de {w.get('description', 'satisfacción garantizada')}\n"
+            f"• Si no te gusta → te devolvemos el dinero\n"
+            f"• Productos 100% originales y de calidad\n"
+            f"• Cambios sin costo si hay defecto de fábrica\n\n"
+            f"¡Vendemos con confianza! ¿Qué producto te interesa? 😊"
+        ),
+        "ubicacion": (
+            f"📍 *Encuéntranos:*\n"
+            f"{s.get('name', '')}\n"
+            f"{s.get('address', '')}\n\n"
+            f"🛵 También hacemos delivery. ¿Prefieres venir o te lo enviamos? 😊"
+        ),
+        "descuento": (
+            f"🏷️ *Descuentos y Promos:*\n"
+            f"• Compra 2 productos → {d.get('two_products_pct', 10)}% de descuento\n"
+            f"• Compra 3 o más → {d.get('three_plus_pct', 15)}% de descuento\n"
+            f"• 🎁 Envío gratis comprando más de {d.get('free_shipping_threshold_display', 'S/ 80')}\n\n"
+            f"¡Arma tu kit y ahorra! Escribe *#catalogo* para ver los productos. 😊"
+        ),
+        "devolucion": (
+            f"🔄 *Cambios y Devoluciones:*\n"
+            f"• Tienes *{w.get('days', 30)} días* desde la compra\n"
+            f"• Producto en condiciones originales\n"
+            f"• Coordinamos el recojo sin costo\n"
+            f"• Reembolso al mismo método de pago\n\n"
+            f"Somos flex, ¡tu satisfacción es lo primero! ¿Tuviste algún problema con tu pedido?"
+        ),
+        "combo": (
+            f"🎁 *Kits y Combos recomendados:*\n"
+            f"• Compra 2 productos → {d.get('two_products_pct', 10)}% de descuento\n"
+            f"• Compra 3 o más → {d.get('three_plus_pct', 15)}% de descuento\n\n"
+            f"Escribe *#catalogo* para verlos todos y armar tu combo. 😊"
+        ),
+    }
 
 # ===== KEYWORDS PARA FAQ =====
 FAQ_KEYWORDS = {
@@ -174,17 +185,21 @@ def detect_command(message: str) -> Optional[str]:
     return None
 
 
-def generate_catalog(products: List) -> str:
+def generate_catalog(products: List, profile: dict) -> str:
     """Genera catálogo formateado para WhatsApp"""
     if not products:
         return "😔 No tenemos productos disponibles en este momento. ¡Vuelve pronto!"
 
-    catalog = f"🛍️ *CATÁLOGO {bot_config.STORE_NAME.upper()}*\n"
+    catalog_cfg = profile.get("catalog", {})
+    store_name = get_field(profile, "store", "name", default="TIENDA")
+    desc_max = catalog_cfg.get("description_preview_chars", 60)
+
+    catalog = f"🛍️ *CATÁLOGO {store_name.upper()}*\n"
     catalog += "─" * 30 + "\n\n"
 
     for i, p in enumerate(products, 1):
         stock_emoji = "✅" if p.stock > 5 else ("⚠️" if p.stock > 0 else "❌")
-        desc = (p.description[:bot_config.CATALOG_DESC_MAX_CHARS] + "...") if len(p.description) > bot_config.CATALOG_DESC_MAX_CHARS else p.description
+        desc = (p.description[:desc_max] + "...") if len(p.description) > desc_max else p.description
         catalog += f"*{i}. {p.name}*\n"
         catalog += f"   💰 S/ {p.price / 100:.2f}\n"
         catalog += f"   {stock_emoji} Stock: {p.stock} unidades\n"
@@ -345,7 +360,7 @@ def get_greeting_by_time() -> str:
         return "Buenas noches"
 
 
-def get_product_recommendations(message: str, products: List) -> List:
+def get_product_recommendations(message: str, products: List, max_recommendations: int = 3) -> List:
     """Filtra productos relevantes según palabras clave del mensaje"""
     if not products:
         return []
@@ -369,7 +384,7 @@ def get_product_recommendations(message: str, products: List) -> List:
             relevant_product_keywords.update(triggers)
 
     if not relevant_product_keywords:
-        return products[:bot_config.AI_MAX_RECOMMENDATIONS]  # devuelve los primeros si no hay match
+        return products[:max_recommendations]  # devuelve los primeros si no hay match
 
     scored = []
     for p in products:
@@ -379,7 +394,7 @@ def get_product_recommendations(message: str, products: List) -> List:
             scored.append((score, p))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [p for _, p in scored[:bot_config.AI_MAX_RECOMMENDATIONS]] if scored else products[:bot_config.AI_MAX_RECOMMENDATIONS]
+    return [p for _, p in scored[:max_recommendations]] if scored else products[:max_recommendations]
 
 def _backup_loop() -> None:
     """Hilo daemon que realiza backups periódicos de la base de datos SQLite."""
@@ -582,69 +597,76 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str
         log_with_context(logger, "info", "Producto creado", product_name=product.name, product_id=db_product.id)
         return db_product
 
-def generate_ai_response(message: str, products: List[Product], conversation_history: List[str] = None, recently_viewed: List[str] = None) -> str:
+def generate_ai_response(message: str, products: List[Product], profile: dict, conversation_history: List[str] = None, recently_viewed: List[str] = None) -> str:
     """
     Genera respuesta inteligente con personalidad y detección de intención
     """
-    
+    ai_cfg = profile.get("ai", {})
+    msgs_cfg = profile.get("messages", {})
+    bot_name = get_field(profile, "bot", "name", default="Favio")
+    store_name = get_field(profile, "store", "name", default="la tienda")
+    warranty_days = get_field(profile, "warranty", "days", default=30)
+    discount_two = get_field(profile, "discounts", "two_products_pct", default=10)
+    max_products_ctx = ai_cfg.get("max_products_in_context", 8)
+    max_recommendations = ai_cfg.get("max_recommendations", 3)
+    max_chars = ai_cfg.get("response_max_chars", 1000)
+    history_limit = ai_cfg.get("history_messages_limit", 6)
+    ai_desc_chars = profile.get("catalog", {}).get("ai_description_chars", 90)
+
     # Detectar intención del mensaje
     intent = detect_intent(message)
-    
+
     # Si es una pregunta FAQ, responder directamente (más rápido)
     if intent["type"] == "faq" and intent["faq_topic"]:
         log_with_context(logger, "info", "FAQ detectada", topic=intent["faq_topic"])
-        return FAQ_RESPONSES[intent["faq_topic"]]
-    
+        faq = build_faq_responses(profile)
+        return faq.get(intent["faq_topic"], msgs_cfg.get("error_general", "Disculpa, tuve un problemita técnico 😅 Escribe *#catalogo* o *#ayuda*."))
+
     # Si es saludo
     if intent["type"] == "greeting":
         saludo = get_greeting_by_time()
-        is_returning = bool(conversation_history)  # tiene historial → cliente recurrente
+        is_returning = bool(conversation_history)
         if is_returning:
-            greetings = [
-                f"¡{saludo}! 👋 Qué bueno verte de vuelta. Soy {bot_config.BOT_NAME}. ¿Volvemos con los zapatos? 😄 ¿En qué te ayudo hoy?",
-                f"¡{saludo}! 😊 ¡Bienvenido de nuevo a {bot_config.STORE_NAME}! ¿Qué necesitas esta vez?",
-                f"¡{saludo}! Qué gusto que regreses. 🙌 Cuéntame, ¿qué tienes hoy para cuidar?",
-            ]
+            templates = msgs_cfg.get("greeting_returning", [
+                f"¡{{saludo}}! 👋 Qué bueno verte de vuelta. Soy {{bot_name}}. ¿Volvemos con los zapatos? 😄",
+            ])
         else:
-            greetings = [
-                f"¡{saludo}! 👋 Soy {bot_config.BOT_NAME} de *{bot_config.STORE_NAME}*. Me especializo en productos de cuidado de calzado. Escribe *#catalogo* para ver todo lo que tenemos. ¿Qué tipo de zapatos quieres cuidar?",
-                f"¡{saludo}! 😊 Bienvenido a *{bot_config.STORE_NAME}*. Tenemos todo para que tus zapatos luzcan como nuevos. ¿Con qué te puedo ayudar hoy?",
-                f"¡{saludo}! Mucho gusto, soy {bot_config.BOT_NAME}. 🎯 Cuéntame, ¿qué zapatos quieres recuperar?",
-            ]
-        return random.choice(greetings)
+            templates = msgs_cfg.get("greeting_new", [
+                f"¡{{saludo}}! 👋 Soy {{bot_name}} de *{{store_name}}*. Escribe *#catalogo* para ver todo. ¿Qué tipo de zapatos quieres cuidar?",
+            ])
+        template = random.choice(templates)
+        return template.format(saludo=saludo, bot_name=bot_name, store_name=store_name)
 
     # Si es despedida
     if intent["type"] == "goodbye":
-        goodbyes = [
-            "¡Un placer atenderte! 🙌 Si necesitas algo más, aquí estoy de lunes a sábado. ¡Que te vaya bien!",
-            "¡Chau! 👋 Gracias por escribirnos. Cuando quieras cuidar tus zapatos, ya sabes dónde encontrarnos. 😊",
-            "¡Hasta pronto! 🤝 Fue un gusto ayudarte. ¡Que tus zapatos brillen siempre!",
-        ]
-        return random.choice(goodbyes)
+        templates = msgs_cfg.get("goodbye", [
+            "¡Un placer atenderte! 🙌 Si necesitas algo más, aquí estoy. ¡Que te vaya bien!",
+        ])
+        return random.choice(templates)
 
     # Queja: responder con empatía primero
     if intent["type"] == "complaint":
-        return (
-            "Oye, lamento mucho escuchar eso. 😔 Tu satisfacción es lo más importante para nosotros. "
-            "Cuéntame exactamente qué pasó y lo resolvemos de inmediato, ¿ok? "
-            "Tenemos garantía de 30 días y nos hacemos cargo sin problema."
+        template = msgs_cfg.get(
+            "complaint_response",
+            "Oye, lamento mucho escuchar eso. 😔 Tu satisfacción es lo más importante. Cuéntame qué pasó y lo resolvemos de inmediato. Tenemos garantía de {warranty_days} días.",
         )
+        return template.format(warranty_days=warranty_days)
 
     # Objeción de precio: reconocer y redirigir
     if intent["type"] == "price_objection":
-        return (
-            f"Entiendo perfectamente, el presupuesto importa. 💰 "
-            f"Tenemos opciones para todos los bolsillos, y comprar 2 productos te da {bot_config.DISCOUNT_TWO_PRODUCTS}% de descuento. "
-            f"¿Me cuentas qué zapatos tienes y cuánto quieres invertir? Así te busco lo más conveniente. 😊"
+        template = msgs_cfg.get(
+            "price_objection_response",
+            "Entiendo perfectamente, el presupuesto importa. 💰 Tenemos opciones desde poco, y comprar 2 productos te da {discount_two}% de descuento. ¿Cuánto quieres invertir? 😊",
         )
-    
-    # Enriquecer la lista de productos con recomendaciones inteligentes para el mensaje actual
-    recommended = get_product_recommendations(message, products)
-    all_products = products[:bot_config.AI_MAX_PRODUCTS_CONTEXT]
+        return template.format(discount_two=discount_two)
+
+    # Enriquecer la lista de productos con recomendaciones inteligentes
+    recommended = get_product_recommendations(message, products, max_recommendations)
+    all_products = products[:max_products_ctx]
 
     def fmt_product(p: Product) -> str:
         stock_label = "✅ disponible" if p.stock > 5 else (f"⚠️ últimas {p.stock} unidades" if p.stock > 0 else "❌ agotado")
-        return f"  • *{p.name}* — S/ {p.price / 100:.2f} | {stock_label}\n    {p.description[:bot_config.AI_DESC_MAX_CHARS]}"
+        return f"  • *{p.name}* — S/ {p.price / 100:.2f} | {stock_label}\n    {p.description[:ai_desc_chars]}"
 
     if recommended:
         rec_context = "PRODUCTOS RECOMENDADOS para este cliente:\n" + "\n".join(fmt_product(p) for p in recommended)
@@ -656,10 +678,10 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
     else:
         all_context = "Sin productos en stock en este momento."
 
-    # Historial: últimos N mensajes con etiqueta (más antiguos primero)
+    # Historial: últimos N mensajes (más antiguos primero)
     history_context = ""
     if conversation_history:
-        history_context = f"\n\n📜 HISTORIAL RECIENTE (últimos mensajes):\n" + "\n".join(conversation_history[-bot_config.HISTORY_MESSAGES_LIMIT:])
+        history_context = f"\n\n📜 HISTORIAL RECIENTE (últimos mensajes):\n" + "\n".join(conversation_history[-history_limit:])
 
     # Carrito activo
     cart_context = ""
@@ -675,59 +697,43 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
 
     saludo_hora = get_greeting_by_time()
 
-    system_prompt = f"""Eres *{bot_config.BOT_NAME}*, el vendedor estrella de *{bot_config.STORE_NAME}* con 5 años de experiencia en cuidado de calzado.
+    # Construir el system prompt desde la plantilla del perfil
+    catchphrases = get_field(profile, "bot", "catchphrases", default=[])
+    catchphrases_str = ", ".join(catchphrases) if catchphrases else "pe, bacán"
+    payment_methods = ", ".join(get_field(profile, "payments", "methods", default=["Yape", "Plin"]))
 
-🧠 TU PERSONALIDAD:
-- Eres cálido, cercano y carismático — como hablar con un amigo que sabe mucho de zapatos
-- Usas lenguaje natural peruano (puedes decir "bacán", "jale", "pe" pero sin exagerar)
-- Máximo 1-2 emojis por respuesta (no spamear emojis)
-- SIEMPRE respondes en español, nunca en inglés
-- No eres robótico: varía tus frases, no repitas las mismas palabras
-- Eres honesto: si un producto no aplica al caso del cliente, lo dices
-
-🎯 ESTRATEGIA DE VENTA:
-1. Primero ESCUCHA y DIAGNOSTICA el problema del cliente
-2. Luego recomienda el producto EXACTO con nombre y precio
-3. Explica POR QUÉ ese producto resuelve SU problema específico
-4. Cierra con pregunta o CTA (call-to-action)
-5. Nunca presiones — sugiere con confianza
-
-💡 MANEJO DE SITUACIONES:
-- Cliente indeciso → haz UNA pregunta de clarificación (material, color, tipo de zapato)
-- Cliente pregunta precio → dígale inmediatamente, sin rodeos
-- Cliente tiene carrito → menciónalo sutilmente y anima a confirmar
-- Cliente dice "es caro" → muestra el valor, menciona la garantía, sugiere combos
-- No sabes la respuesta → di "déjame verificarlo" y deriva a #ayuda
-
-{rec_context}
-
-{all_context}
-
-📋 COMANDOS QUE PUEDE USAR EL CLIENTE:
-- *#catalogo* → ver todos los productos
-- *agregar [número]* → agregar al carrito (ej: agregar 2)
-- *#carrito* → ver su carrito
-- *#pedido* → confirmar compra
-- *#ayuda* → más ayuda
-
-INFO TIENDA:
-- Envíos: Lima 24-48h ({bot_config.SHIPPING_LIMA_PRICE}) | Provincias 3-5 días ({bot_config.SHIPPING_PROVINCES_PRICE}) | Gratis sobre {bot_config.SHIPPING_FREE_THRESHOLD}
-- Pagos: Yape, Plin, transferencia BCP/Interbank, efectivo
-- Garantía: 30 días satisfacción garantizada
-- Horario: {saludo_hora} — {bot_config.SCHEDULE_WEEKDAY} | {bot_config.SCHEDULE_SATURDAY}
-{history_context}{cart_context}{intent_hint}
-
-✍️ ESTILO DE RESPUESTA:
-- Máximo 4 líneas (conciso, no bloques de texto)
-- Siempre termina con pregunta O call-to-action (nunca ambos)
-- Usa *negrita* para nombres de productos y precios
-- NUNCA generes listas largas — eso lo hace el comando #catalogo
-
-EJEMPLOS DE BUENAS RESPUESTAS:
-• "Mis zapatillas blancas están amarillentas" → "¡Clásico problema! 😅 Para eso te va perfecto el *Limpiador Espuma Premium* (S/ 15) — saca las manchas de tela y lona sin dañarlas. Escribe *agregar [número]* para añadirlo. ¿Qué número calzas? (Por si acaso 😄)"
-• "¿Cuánto cuesta la crema?" → "La *Crema Restauradora Cuero* está a *S/ 18* y dura varios meses. ¿Es para zapatos claros u oscuros? Así te doy el tip de aplicación exacto. 😊"
-• "Quiero algo para mis botas de cuero" → "Bacán, las botas de cuero necesitan dos cosas: limpieza y nutrición. Te recomiendo el *Kit Cuero* (crema + cepillo) que sale más económico. ¿Las botas son negras o de otro color?"
-"""
+    template_str = profile.get("system_prompt_template", "")
+    fmt_vars = {
+        "bot_name": bot_name,
+        "bot_role": get_field(profile, "bot", "role", default="vendedor estrella"),
+        "store_name": store_name,
+        "experience_years": get_field(profile, "bot", "experience_years", default=5),
+        "store_type": get_field(profile, "store", "type", default="tienda"),
+        "language_style": get_field(profile, "bot", "language_style", default="natural"),
+        "catchphrases": catchphrases_str,
+        "max_emojis": get_field(profile, "bot", "max_emojis_per_response", default=2),
+        "response_language": get_field(profile, "bot", "response_language", default="español"),
+        "rec_context": rec_context,
+        "all_context": all_context,
+        "lima_eta": get_field(profile, "shipping", "lima_eta", default="24-48h"),
+        "lima_price": get_field(profile, "shipping", "lima_price_display", default="S/ 10"),
+        "provinces_eta": get_field(profile, "shipping", "provinces_eta", default="3-5 días"),
+        "provinces_price": get_field(profile, "shipping", "provinces_price_display", default="S/ 15"),
+        "free_threshold": get_field(profile, "shipping", "free_threshold_display", default="S/ 80"),
+        "payment_methods": payment_methods,
+        "warranty_days": warranty_days,
+        "current_greeting": saludo_hora,
+        "weekday_schedule": get_field(profile, "schedule", "weekday", default=""),
+        "saturday_schedule": get_field(profile, "schedule", "saturday", default=""),
+        "history_context": history_context,
+        "cart_context": cart_context,
+        "intent_hint": intent_hint,
+    }
+    try:
+        system_prompt = template_str.format(**fmt_vars)
+    except (KeyError, ValueError) as fmt_err:
+        log_with_context(logger, "warning", "Error formateando system_prompt_template", error=str(fmt_err))
+        system_prompt = f"Eres {bot_name}, el vendedor de {store_name}. Ayuda al cliente a encontrar el producto correcto.\n\n{rec_context}\n\n{all_context}{history_context}{cart_context}{intent_hint}"
 
     try:
         start_time = time.time()
@@ -738,12 +744,12 @@ EJEMPLOS DE BUENAS RESPUESTAS:
             {'role': 'user', 'content': message}
         ]
         ollama_options = {
-            'temperature': 0.8,
-            'num_predict': 80,
-            'num_ctx': 1024,
-            'top_p': 0.9,
-            'repeat_penalty': 1.2,
-            'num_thread': 4,
+            'temperature': ai_cfg.get("ollama_temperature", 0.8),
+            'num_predict': ai_cfg.get("ollama_num_predict", 80),
+            'num_ctx': ai_cfg.get("ollama_num_ctx", 1024),
+            'top_p': ai_cfg.get("ollama_top_p", 0.9),
+            'repeat_penalty': ai_cfg.get("ollama_repeat_penalty", 1.2),
+            'num_thread': ai_cfg.get("ollama_num_thread", 4),
         }
 
         # Llamada con timeout de 45 segundos para no bloquear al cliente
@@ -758,9 +764,9 @@ EJEMPLOS DE BUENAS RESPUESTAS:
                 response = future.result(timeout=settings.OLLAMA_TIMEOUT)
             except concurrent.futures.TimeoutError:
                 log_with_context(logger, "warning", "Ollama timeout", timeout=settings.OLLAMA_TIMEOUT)
-                return (
-                    "Disculpa la demora 🙏 Escribe *#catalogo* para ver todos nuestros productos "
-                    "o cuéntame más sobre lo que necesitas y te ayudo de inmediato."
+                return msgs_cfg.get(
+                    "error_timeout",
+                    "Disculpa la demora 🙏 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos.",
                 )
 
         elapsed = time.time() - start_time
@@ -769,13 +775,12 @@ EJEMPLOS DE BUENAS RESPUESTAS:
         # Fallback si Ollama devuelve respuesta vacía o solo espacios
         if not ai_message:
             log_with_context(logger, "warning", "Ollama devolvió respuesta vacía")
-            return (
-                "Disculpa, no pude procesar eso bien. 😅 "
-                "Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos."
+            return msgs_cfg.get(
+                "error_general",
+                "Disculpa, tuve un problemita técnico 😅 Escribe *#catalogo* o *#ayuda*.",
             )
 
         # Truncar respuesta excesivamente larga al último punto o salto de línea antes del límite
-        max_chars = bot_config.AI_RESPONSE_MAX_CHARS
         if len(ai_message) > max_chars:
             truncated = ai_message[:max_chars]
             # Buscar el último punto o salto de línea para corte limpio
@@ -797,9 +802,9 @@ EJEMPLOS DE BUENAS RESPUESTAS:
 
     except Exception as e:
         log_with_context(logger, "error", "Error generando respuesta IA", error=str(e))
-        return (
-            "Disculpa, tuve un problemita técnico 😅 "
-            "Escribe *#catalogo* para ver nuestros productos o *#ayuda* para ver los comandos disponibles."
+        return msgs_cfg.get(
+            "error_general",
+            "Disculpa, tuve un problemita técnico 😅 Escribe *#catalogo* o *#ayuda*.",
         )
 
 @app.post("/api/process-message")
@@ -807,6 +812,14 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     """Procesar mensaje con IA, comandos y manejo de carrito/pedidos"""
 
     log_with_context(logger, "info", "Nuevo mensaje recibido", phone=request.phone[-4:], message=request.message[:100])
+
+    # Cargar perfil activo (con fallback a JSON por defecto)
+    profile = get_profile(db)
+    ai_cfg = profile.get("ai", {})
+    msgs_cfg = profile.get("messages", {})
+    bot_name = get_field(profile, "bot", "name", default="Favio")
+    # MESSAGE_COOLDOWN_SECONDS es configuración de servidor, no del perfil del bot
+    message_cooldown = settings.MESSAGE_COOLDOWN_SECONDS
 
     # Rate limiting: evitar procesamiento doble si el mismo número envía mensajes consecutivos
     now = time.time()
@@ -818,8 +831,8 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         del _message_cooldowns[k]
 
     last_ts = _message_cooldowns.get(request.phone)
-    if last_ts is not None and (now - last_ts) < bot_config.MESSAGE_COOLDOWN_SECONDS:
-        raise RateLimitException("Un momento, estoy procesando tu mensaje anterior 🙏")
+    if last_ts is not None and (now - last_ts) < message_cooldown:
+        raise RateLimitException(msgs_cfg.get("rate_limit", "Un momento, estoy procesando tu mensaje anterior 🙏"))
     _message_cooldowns[request.phone] = now
 
     # 1. Buscar o crear conversación
@@ -848,8 +861,11 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     # 3. Verificar si bot está activo
     if not conversation.bot_enabled:
         log_with_context(logger, "info", "Bot desactivado para conversación", conversation_id=conversation.id)
+        # bot_disabled_response puede ser null en el perfil para mantener el comportamiento original
+        # (sin respuesta automática — el agente humano responde manualmente)
+        disabled_msg = msgs_cfg.get("bot_disabled_response") or None
         return {
-            "reply": None,
+            "reply": disabled_msg,
             "bot_enabled": False,
             "message": "Bot desactivado. Respuesta manual requerida."
         }
@@ -861,7 +877,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
 
     if command == "catalog":
         products = db.query(Product).filter(Product.stock > 0).all()
-        ai_response = generate_catalog(products)
+        ai_response = generate_catalog(products, profile)
         log_with_context(logger, "info", "Comando: catálogo", product_count=len(products))
 
     elif command == "cart":
@@ -1031,12 +1047,13 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
 
     # 5. Si no fue un comando → usar IA
     if ai_response is None:
+        history_limit = ai_cfg.get("history_messages_limit", settings.HISTORY_MESSAGES_LIMIT)
         recent_messages = db.query(Message).filter(
             Message.conversation_id == conversation.id
-        ).order_by(Message.created_at.desc()).limit(bot_config.HISTORY_MESSAGES_LIMIT).all()
+        ).order_by(Message.created_at.desc()).limit(history_limit).all()
 
         conversation_history = [
-            f"{'Cliente' if msg.from_customer else bot_config.BOT_NAME}: {msg.content}"
+            f"{'Cliente' if msg.from_customer else bot_name}: {msg.content}"
             for msg in reversed(recent_messages)
         ]
 
@@ -1051,6 +1068,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         ai_response = generate_ai_response(
             message=request.message,
             products=products,
+            profile=profile,
             conversation_history=conversation_history,
             recently_viewed=recently_viewed
         )
@@ -1372,6 +1390,50 @@ def check_ollama(_: Optional[str] = Depends(verify_api_key_optional)):
         return {"status": "ok", "response": response['message']['content']}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ===== BOT PROFILE ENDPOINTS =====
+
+@app.get("/api/bot-profile")
+def read_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+    """Leer el perfil activo del bot (desde DB o desde el JSON por defecto)."""
+    row = db.query(BotProfile).order_by(BotProfile.id.desc()).first()
+    if row:
+        return json.loads(row.profile_json)
+    return load_default_profile()
+
+
+@app.put("/api/bot-profile")
+def update_bot_profile(
+    profile_data: dict = Body(...),
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key),
+):
+    """Actualizar el perfil completo del bot. Los cambios se reflejan en el siguiente mensaje."""
+    profile_json_str = json.dumps(profile_data, ensure_ascii=False)
+    row = db.query(BotProfile).order_by(BotProfile.id.desc()).first()
+    if row:
+        row.profile_json = profile_json_str
+        row.updated_at = datetime.utcnow()
+    else:
+        row = BotProfile(profile_json=profile_json_str)
+        db.add(row)
+    with handle_db_errors():
+        db.commit()
+    invalidate_cache()
+    log_with_context(logger, "info", "Perfil del bot actualizado")
+    return {"message": "Perfil actualizado correctamente"}
+
+
+@app.post("/api/bot-profile/reset")
+def reset_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+    """Restaurar el perfil por defecto eliminando el perfil guardado en DB."""
+    with handle_db_errors():
+        db.query(BotProfile).delete()
+        db.commit()
+    invalidate_cache()
+    log_with_context(logger, "info", "Perfil del bot restaurado al valor por defecto")
+    return {"message": "Perfil restaurado al valor por defecto"}
 
 if __name__ == "__main__":
     import uvicorn

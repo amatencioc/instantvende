@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     MESSAGE_COOLDOWN_SECONDS: float = 1.5
     AI_RESPONSE_MAX_CHARS: int = 1000
 
+    # === Bot profile ===
+    BOT_PROFILE_PATH: str = ""  # ruta al bot_profile.json; vacío = usar el del directorio del backend
+
     @field_validator("API_SECRET_KEY")
     @classmethod
     def api_key_not_empty(cls, v: str) -> str:

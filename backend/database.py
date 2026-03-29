@@ -125,4 +125,14 @@ class OrderItem(Base):
     order = relationship("Order", back_populates="items")
 
 
+class BotProfile(Base):
+    """Perfil dinámico del bot — editado desde el panel de administración."""
+    __tablename__ = "bot_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_json = Column(Text, nullable=False)   # JSON completo del perfil
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by = Column(String, nullable=True)    # quién hizo el último cambio
+
+
 Base.metadata.create_all(bind=engine)
