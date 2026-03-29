@@ -150,6 +150,13 @@ client.on('message', async (message) => {
         if (message.from === 'status@broadcast') return;
         if (message.fromMe) return;
 
+        // Ignorar mensajes sin texto (stickers, reacciones, audios, documentos, etc.)
+        const bodyText = (message.body || '').trim();
+        if (!bodyText) {
+            console.log('⏭️ Mensaje sin texto (sticker/reacción/audio), ignorado');
+            return;
+        }
+
         const contact = await message.getContact();
         const contactName = contact.pushname || 'Desconocido';
 
@@ -172,7 +179,7 @@ client.on('message', async (message) => {
 
         console.log('🤖 Procesando con IA...');
 
-        const response = await callBackend(message.from, message.body);
+        const response = await callBackend(message.from, bodyText);
 
         clearInterval(typingInterval);
         await chat.clearState();
@@ -186,9 +193,14 @@ client.on('message', async (message) => {
             // Dividir respuestas largas en múltiples mensajes
             const parts = splitMessage(data.reply, MAX_MSG_LENGTH);
             for (let i = 0; i < parts.length; i++) {
-                if (i === 0) {
-                    await message.reply(parts[i]);
-                } else {
+                try {
+                    if (i === 0) {
+                        await message.reply(parts[i]);
+                    } else {
+                        await chat.sendMessage(parts[i]);
+                    }
+                } catch (replyErr) {
+                    console.log('⚠️  message.reply() falló, usando sendMessage:', replyErr.message);
                     await chat.sendMessage(parts[i]);
                 }
             }
@@ -231,6 +243,7 @@ client.on('message', async (message) => {
         } else if (error.response) {
             console.error('   Status:', error.response.status);
             console.error('   Error:', JSON.stringify(error.response.data));
+            userMsg = ERROR_MSG_GENERAL;
         } else {
             console.error('  ', error.message);
         }
