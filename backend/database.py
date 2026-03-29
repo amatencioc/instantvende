@@ -1,6 +1,35 @@
+import sqlite3
+from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from datetime import datetime
+
+# ===== BACKUPS =====
+_BACKUP_DIR = Path("./backups")
+
+
+def backup_database() -> str:
+    """Crea un backup timestamped usando la API nativa de SQLite (consistente incluso bajo carga)."""
+    _BACKUP_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    backup_path = _BACKUP_DIR / f"instantvende_{timestamp}.db"
+    source = sqlite3.connect("./instantvende.db")
+    dest = sqlite3.connect(str(backup_path))
+    try:
+        source.backup(dest)
+    finally:
+        dest.close()
+        source.close()
+    return str(backup_path)
+
+
+def cleanup_old_backups(max_backups: int = 10) -> None:
+    """Elimina los backups más antiguos, conservando solo max_backups archivos."""
+    if not _BACKUP_DIR.exists():
+        return
+    backups = sorted(_BACKUP_DIR.glob("instantvende_*.db"))
+    while len(backups) > max_backups:
+        backups.pop(0).unlink(missing_ok=True)
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./instantvende.db"
 

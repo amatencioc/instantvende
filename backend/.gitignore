@@ -1,0 +1,15 @@
+# Variables de entorno — nunca exponer en git
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Entorno virtual
+venv/
+.venv/
+
+# Backups de la base de datos
+backups/

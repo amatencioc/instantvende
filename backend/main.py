@@ -1,18 +1,42 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from pydantic import BaseModel
-from typing import List, Optional, Dict
-from datetime import datetime
+import os
 import re
+import secrets
 import random
 import time
+import threading
 import concurrent.futures
-from pydantic import BaseModel, ConfigDict
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security.api_key import APIKeyHeader
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from pydantic import BaseModel, ConfigDict, field_validator
+from typing import List, Optional, Dict
+from datetime import datetime
 import ollama
 
-from database import SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem
+from database import (
+    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem,
+    backup_database, cleanup_old_backups,
+)
+
+# ===== CONFIGURACIÓN (carga variables desde .env) =====
+load_dotenv()
+
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(api_key: str = Security(_API_KEY_HEADER)) -> str:
+    """Valida la clave de API enviada en el encabezado X-API-Key."""
+    expected = os.getenv("API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=500, detail="API_KEY no está configurada en el servidor")
+    # secrets.compare_digest evita ataques de temporización
+    if not api_key or not secrets.compare_digest(api_key, expected):
+        raise HTTPException(status_code=401, detail="API key inválida o ausente")
+    return api_key
 
 # ===== PRE-CARGAR MODELO AL INICIAR =====
 print("⏳ Pre-cargando modelo Ollama...")
@@ -361,7 +385,35 @@ def get_product_recommendations(message: str, products: List) -> List:
     scored.sort(key=lambda x: x[0], reverse=True)
     return [p for _, p in scored[:3]] if scored else products[:3]
 
-app = FastAPI(title="InstantVende API", version="1.0.0-mvp")
+def _backup_loop() -> None:
+    """Hilo daemon que realiza backups periódicos de la base de datos SQLite."""
+    interval_hours = int(os.getenv("BACKUP_INTERVAL_HOURS", "6"))
+    max_backups = int(os.getenv("MAX_BACKUPS", "10"))
+    while True:
+        time.sleep(interval_hours * 3600)
+        try:
+            path = backup_database()
+            cleanup_old_backups(max_backups)
+            print(f"✅ Backup automático creado: {path}")
+        except Exception as exc:
+            print(f"❌ Error en backup automático: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Backup inicial al arrancar el servidor
+    try:
+        path = backup_database()
+        cleanup_old_backups(int(os.getenv("MAX_BACKUPS", "10")))
+        print(f"✅ Backup inicial creado: {path}")
+    except Exception as exc:
+        print(f"⚠️  Backup inicial falló: {exc}")
+    # Hilo daemon de backup periódico (se cierra automáticamente con el proceso)
+    threading.Thread(target=_backup_loop, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="InstantVende API", version="1.0.0-mvp", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -380,36 +432,132 @@ def get_db():
 
 class ProductCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
+
     name: str
     description: str
     price: int
     stock: int
     image_url: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def name_valid(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("El nombre no puede estar vacío")
+        if len(v) > 200:
+            raise ValueError("El nombre no puede superar 200 caracteres")
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def description_valid(cls, v: str) -> str:
+        if len(v) > 2000:
+            raise ValueError("La descripción no puede superar 2000 caracteres")
+        return v.strip()
+
+    @field_validator("price")
+    @classmethod
+    def price_valid(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("El precio debe ser mayor a 0 centavos")
+        if v > 100_000_00:  # S/ 100,000 en centavos
+            raise ValueError("El precio excede el límite permitido")
+        return v
+
+    @field_validator("stock")
+    @classmethod
+    def stock_valid(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("El stock no puede ser negativo")
+        if v > 100_000:
+            raise ValueError("El stock no puede superar 100,000 unidades")
+        return v
+
+
 class MessageRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
+
     phone: str
     message: str
+
+    @field_validator("phone")
+    @classmethod
+    def phone_valid(cls, v: str) -> str:
+        digits = re.sub(r"\D", "", v)
+        if len(digits) < 7 or len(digits) > 15:
+            raise ValueError("Número de teléfono inválido (7-15 dígitos)")
+        return digits
+
+    @field_validator("message")
+    @classmethod
+    def message_valid(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("El mensaje no puede estar vacío")
+        if len(v) > 4096:
+            raise ValueError("El mensaje no puede superar 4096 caracteres")
+        return v
+
 
 class CartItemRequest(BaseModel):
     product_id: int
     quantity: int = 1
 
+    @field_validator("product_id")
+    @classmethod
+    def product_id_valid(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("ID de producto inválido")
+        return v
+
+    @field_validator("quantity")
+    @classmethod
+    def quantity_valid(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("La cantidad debe ser al menos 1")
+        if v > 100:
+            raise ValueError("La cantidad no puede superar 100 unidades por artículo")
+        return v
+
+
 class OrderCreateRequest(BaseModel):
     phone: str
     notes: Optional[str] = None
 
+    @field_validator("phone")
+    @classmethod
+    def phone_valid(cls, v: str) -> str:
+        digits = re.sub(r"\D", "", v)
+        if len(digits) < 7 or len(digits) > 15:
+            raise ValueError("Número de teléfono inválido (7-15 dígitos)")
+        return digits
+
+    @field_validator("notes")
+    @classmethod
+    def notes_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(v) > 1000:
+            raise ValueError("Las notas no pueden superar 1000 caracteres")
+        return v
+
+
 class OrderStatusUpdate(BaseModel):
-    status: str  # pending, confirmed, shipped, delivered, cancelled
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def status_valid(cls, v: str) -> str:
+        allowed = {"pending", "confirmed", "shipped", "delivered", "cancelled"}
+        if v not in allowed:
+            raise ValueError(f"Estado inválido. Permitidos: {', '.join(sorted(allowed))}")
+        return v
 
 @app.get("/api/products")
 def get_products(db: Session = Depends(get_db)):
     return db.query(Product).all()
 
 @app.post("/api/products")
-def create_product(product: ProductCreate, db: Session = Depends(get_db)):
+def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     db_product = Product(**product.dict())
     db.add(db_product)
     db.commit()
@@ -618,7 +766,7 @@ EJEMPLOS DE BUENAS RESPUESTAS:
         )
 
 @app.post("/api/process-message")
-def process_message(request: MessageRequest, db: Session = Depends(get_db)):
+def process_message(request: MessageRequest, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Procesar mensaje con IA, comandos y manejo de carrito/pedidos"""
 
     print(f"\n{'='*70}")
@@ -885,7 +1033,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db)):
 # ===== ENDPOINTS DE CONVERSACIONES =====
 
 @app.get("/api/conversations")
-def get_conversations(db: Session = Depends(get_db)):
+def get_conversations(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Obtener todas las conversaciones ordenadas por más reciente"""
     conversations = db.query(Conversation).order_by(
         Conversation.last_message_at.desc()
@@ -893,7 +1041,7 @@ def get_conversations(db: Session = Depends(get_db)):
     return conversations
 
 @app.get("/api/conversations/{conversation_id}/messages")
-def get_messages(conversation_id: int, db: Session = Depends(get_db)):
+def get_messages(conversation_id: int, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Obtener todos los mensajes de una conversación específica"""
     messages = db.query(Message).filter(
         Message.conversation_id == conversation_id
@@ -905,7 +1053,7 @@ def get_messages(conversation_id: int, db: Session = Depends(get_db)):
     return messages
 
 @app.patch("/api/conversations/{conversation_id}/toggle-bot")
-def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db)):
+def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Activar/desactivar bot para una conversación (para intervención humana)"""
     conversation = db.query(Conversation).filter(
         Conversation.id == conversation_id
@@ -930,7 +1078,7 @@ def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db
 # ===== ENDPOINTS DE CARRITO =====
 
 @app.post("/api/cart/{phone}/add")
-def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get_db)):
+def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Agregar producto al carrito vía API"""
     conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
     if not conversation:
@@ -960,7 +1108,7 @@ def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get
 
 
 @app.get("/api/cart/{phone}")
-def api_get_cart(phone: str, db: Session = Depends(get_db)):
+def api_get_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Ver carrito de un cliente vía API"""
     conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
     if not conversation:
@@ -992,7 +1140,7 @@ def api_get_cart(phone: str, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/cart/{phone}")
-def api_clear_cart(phone: str, db: Session = Depends(get_db)):
+def api_clear_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Vaciar carrito de un cliente"""
     conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
     if not conversation:
@@ -1007,7 +1155,7 @@ def api_clear_cart(phone: str, db: Session = Depends(get_db)):
 # ===== ENDPOINTS DE PEDIDOS =====
 
 @app.get("/api/orders")
-def get_orders(status: Optional[str] = None, db: Session = Depends(get_db)):
+def get_orders(status: Optional[str] = None, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Listar todos los pedidos, opcionalmente filtrados por estado"""
     query = db.query(Order)
     if status:
@@ -1040,7 +1188,7 @@ def get_orders(status: Optional[str] = None, db: Session = Depends(get_db)):
 
 
 @app.get("/api/orders/{order_id}")
-def get_order(order_id: int, db: Session = Depends(get_db)):
+def get_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Obtener detalles de un pedido específico"""
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
@@ -1068,15 +1216,8 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.patch("/api/orders/{order_id}/status")
-def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = Depends(get_db)):
+def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Actualizar estado de un pedido (y restaurar stock si se cancela)"""
-    valid_statuses = ["pending", "confirmed", "shipped", "delivered", "cancelled"]
-    if update.status not in valid_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Estado inválido. Permitidos: {', '.join(valid_statuses)}"
-        )
-
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
@@ -1107,7 +1248,7 @@ def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = 
 # ===== ANALYTICS =====
 
 @app.get("/api/analytics")
-def get_analytics(db: Session = Depends(get_db)):
+def get_analytics(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Dashboard de métricas y estadísticas"""
     total_revenue = db.query(func.sum(Order.total)).filter(
         Order.status.in_(["confirmed", "shipped", "delivered"])
