@@ -9,7 +9,7 @@ import Badge from '../components/ui/Badge.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 
 function formatPhone(phone) {
-  if (!phone) return 'Sin número'
+  if (!phone) return '—'
   return String(phone)
 }
 
@@ -48,11 +48,13 @@ export default function ConversationDetail() {
   const handleToggle = async () => {
     if (!conv) return
     setToggling(true)
+    const newEnabled = !conv.bot_enabled
     try {
-      await toggleBot(conv.id, !conv.bot_enabled)
-      setConv((c) => ({ ...c, bot_enabled: !c.bot_enabled }))
-      toast.success(`Bot ${conv.bot_enabled ? 'desactivado' : 'activado'}`)
-    } catch {
+      await toggleBot(conv.id, newEnabled)
+      setConv((c) => ({ ...c, bot_enabled: newEnabled }))
+      toast.success(`Bot ${newEnabled ? 'activado' : 'desactivado'}`)
+    } catch (err) {
+      console.error('Error toggle bot:', err)
       toast.error('Error al cambiar el estado del bot')
     } finally {
       setToggling(false)
@@ -83,7 +85,7 @@ export default function ConversationDetail() {
         <Card className="flex flex-col gap-4">
           <div className="flex flex-col items-center gap-3 text-center">
             <div className="w-16 h-16 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-2xl font-bold">
-              {clientLabel.slice(-1).toUpperCase()}
+              {(clientLabel || '?').slice(0, 1).toUpperCase()}
             </div>
             <div>
               <p className="text-slate-800 font-semibold text-lg">{clientLabel}</p>

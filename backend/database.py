@@ -10,9 +10,9 @@ engine = create_engine(
         "check_same_thread": False,
         "timeout": 30,            # esperar hasta 30s si la DB está bloqueada
     },
-    pool_size=3,                  # WAL mode permite lecturas concurrentes
-    max_overflow=5,               # conexiones extra bajo carga pico
-    pool_timeout=30,              # tiempo de espera para obtener conexión del pool
+    pool_size=5,                  # conexiones concurrentes permitidas
+    max_overflow=10,              # conexiones extra bajo carga
+    pool_timeout=30,              # tiempo máximo de espera por conexión del pool
     pool_pre_ping=True,           # verificar conexión antes de usarla
 )
 

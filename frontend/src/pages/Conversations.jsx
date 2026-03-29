@@ -12,7 +12,7 @@ import EmptyState from '../components/ui/EmptyState.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 
 function formatPhone(phone) {
-  if (!phone) return 'Sin número'
+  if (!phone) return '—'
   return String(phone)
 }
 
@@ -62,15 +62,17 @@ export default function Conversations() {
   const handleToggle = async (e, conv) => {
     e.stopPropagation()
     setToggling(conv.id)
+    const newEnabled = !conv.bot_enabled
     try {
-      await toggleBot(conv.id, !conv.bot_enabled)
+      await toggleBot(conv.id, newEnabled)
       setConversations((prev) =>
         prev.map((c) =>
-          c.id === conv.id ? { ...c, bot_enabled: !c.bot_enabled } : c
+          c.id === conv.id ? { ...c, bot_enabled: newEnabled } : c
         )
       )
-      toast.success(`Bot ${conv.bot_enabled ? 'desactivado' : 'activado'}`)
-    } catch {
+      toast.success(`Bot ${newEnabled ? 'activado' : 'desactivado'}`)
+    } catch (err) {
+      console.error('Error toggle bot:', err)
       toast.error('Error al cambiar estado del bot')
     } finally {
       setToggling(null)
@@ -155,7 +157,7 @@ export default function Conversations() {
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
                           <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold flex-shrink-0">
-                            {formatPhone(conv.phone).slice(-1)}
+                            {((conv.customer_name || formatPhone(conv.phone)) || '?').slice(0, 1).toUpperCase()}
                           </div>
                           <div>
                             {conv.customer_name && (
