@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 
 
 # ---------------------------------------------------------------------------
@@ -63,21 +64,29 @@ class RateLimitException(InstantVendeException):
 # ---------------------------------------------------------------------------
 
 @contextmanager
-def handle_db_errors() -> Generator[None, None, None]:
+def handle_db_errors(db: Optional[Session] = None) -> Generator[None, None, None]:
     """Context manager que convierte errores de SQLAlchemy en HTTPExceptions legibles."""
     try:
         yield
     except InstantVendeException:
+        if db:
+            db.rollback()
         raise
     except IntegrityError as exc:
+        if db:
+            db.rollback()
         raise ProductDuplicateException(
             f"Error de integridad en la base de datos: {exc.orig}"
         ) from exc
     except OperationalError as exc:
+        if db:
+            db.rollback()
         raise InstantVendeException(
             f"Error operacional en la base de datos: {exc.orig}"
         ) from exc
     except Exception as exc:
+        if db:
+            db.rollback()
         raise InstantVendeException(f"Error inesperado: {exc}") from exc
 
 
