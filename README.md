@@ -6,6 +6,40 @@ InstantVende permite a tiendas pequeñas tener un **vendedor automático en What
 
 ---
 
+## 🚀 Inicio Rápido — Arrancar todo el sistema
+
+> **Primera vez?** Completa primero la sección [Configuración inicial](#-configuración-inicial) más abajo.
+
+### Windows
+
+```bat
+start.bat
+```
+
+### Linux / Mac
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+Ambos scripts hacen automáticamente:
+1. Instalan dependencias de WhatsApp (`npm install`)
+2. Instalan y compilan el panel de administración (`npm install && npm run build`)
+3. Inician los 3 servicios con PM2 (con auto-restart)
+
+Cuando terminen verás:
+
+```
+Backend API:   http://localhost:8000
+Docs API:      http://localhost:8000/docs
+Panel Admin:   http://localhost:3000
+```
+
+> **⚠️ Primera conexión WhatsApp:** Ejecuta `pm2 logs instantvende-wa` para ver el código QR y escanearlo con tu teléfono.
+
+---
+
 ## ✨ Funcionalidades
 
 | Módulo | Descripción |
@@ -167,64 +201,39 @@ erDiagram
 ## 📁 Estructura del proyecto
 
 ```
-instantvende-mvp/
+instantvende/
 ├── backend/                    # API FastAPI (Python)
 │   ├── main.py                 # Endpoints, lógica de bot, IA
 │   ├── database.py             # Modelos SQLAlchemy (SQLite)
+│   ├── config.py               # Variables de configuración
+│   ├── bot_profile.json        # Perfil editable del bot
 │   └── requirements.txt        # Dependencias Python
 │
 ├── whatsapp/                   # Cliente WhatsApp (Node.js)
 │   ├── whatsapp_client.js      # Conexión WhatsApp Web + envío de mensajes
 │   └── package.json            # Dependencias Node.js
 │
+├── frontend/                   # Panel de administración (React + Vite)
+│   ├── src/                    # Componentes React
+│   ├── vite.config.js          # Config Vite (puerto 3000, proxy a :8000)
+│   └── package.json            # Dependencias Node.js
+│
+├── ecosystem.config.js         # Config PM2 — gestiona los 3 servicios
+├── start.bat                   # Script de inicio para Windows
+├── start.sh                    # Script de inicio para Linux / Mac
 └── README.md
 ```
 
 ---
 
-## 🔒 Configuración de Seguridad (Fase 1)
+## 🔒 Configuración inicial
 
-### Variables de entorno
-
-Antes de ejecutar el proyecto, crea los archivos `.env` copiando los templates:
-
-```bash
-# Backend
-cp backend/.env.example backend/.env
-
-# WhatsApp client
-cp whatsapp/.env.example whatsapp/.env
-```
-
-### Generar API Key segura
-
-```bash
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Copia el valor generado en:
-- `backend/.env` → `API_SECRET_KEY=<valor>`
-- `whatsapp/.env` → `BACKEND_API_KEY=<valor>` (debe ser el mismo)
-
-### Nuevas características de seguridad
-
-| Característica | Descripción |
-|----------------|-------------|
-| 🔑 **API Keys** | Todos los endpoints críticos requieren `X-API-Key` en el header |
-| 📋 **Logging JSON** | Logs estructurados en `logs/app.log` y `logs/errors.log` con rotación automática |
-| 💾 **Backups automáticos** | La BD se respalda cada 6 horas en `backups/` (configurable) |
-| ⚙️ **Config centralizada** | Todas las variables en `.env` — nunca hardcodeadas en el código |
-| 🛡️ **Validaciones** | Stock y precio validados en BD + Pydantic en endpoints |
-| 🚨 **Manejo de errores** | Excepciones personalizadas con respuestas HTTP claras |
-
----
-
-
+> Completa estos pasos **una sola vez** antes de ejecutar `start.bat` / `start.sh`.
 
 ### Prerequisitos
 
-- Python 3.10+
-- Node.js 18+
+- Python 3.10+ (con `pip`)
+- Node.js 18+ (con `npm`)
 - [Ollama](https://ollama.com) instalado y corriendo
 
 ### 1. Instalar Ollama y el modelo de IA
@@ -233,16 +242,41 @@ Copia el valor generado en:
 # Instalar Ollama (Mac/Linux)
 curl -fsSL https://ollama.com/install.sh | sh
 
+# Windows: descarga el instalador desde https://ollama.com
+
 # Descargar el modelo (≈2GB)
 ollama pull phi3:mini
 ```
 
-### 2. Backend (FastAPI)
+### 2. Crear los archivos `.env`
+
+```bash
+# Backend
+cp backend/.env.example backend/.env
+
+# Cliente WhatsApp
+cp whatsapp/.env.example whatsapp/.env
+
+# Panel de administración
+cp frontend/.env.example frontend/.env
+```
+
+### 3. Generar la API Key (seguridad)
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Copia el valor generado en **ambos archivos**:
+- `backend/.env` → `API_SECRET_KEY=<valor>`
+- `whatsapp/.env` → `BACKEND_API_KEY=<valor>` ← debe ser **el mismo** valor
+
+### 4. Instalar dependencias Python del backend
 
 ```bash
 cd backend
 
-# Crear entorno virtual
+# Crear entorno virtual (recomendado)
 python -m venv venv
 
 # Activar (Windows)
@@ -252,27 +286,25 @@ source venv/bin/activate
 
 # Instalar dependencias
 pip install -r requirements.txt
-
-# Iniciar servidor
-python main.py
-# → API disponible en http://localhost:8000
-# → Documentación en http://localhost:8000/docs
 ```
 
-### 3. Bot de WhatsApp (Node.js)
+> **Nota:** El script `start.sh` (Linux/Mac) hace este paso automáticamente.  
+> En Windows, hazlo manualmente antes de ejecutar `start.bat`.
 
-```bash
-cd whatsapp
+---
 
-# Instalar dependencias
-npm install
+## 🔒 Configuración de Seguridad
 
-# Iniciar el bot
-node whatsapp_client.js
-```
+### Variables de entorno
 
-Al iniciar por primera vez, aparece un **código QR** en la terminal. Escanéalo con WhatsApp:
-> WhatsApp → Configuración → Dispositivos vinculados → Vincular dispositivo
+| Característica | Descripción |
+|----------------|-------------|
+| 🔑 **API Keys** | Todos los endpoints críticos requieren `X-API-Key` en el header |
+| 📋 **Logging JSON** | Logs estructurados en `logs/app.log` y `logs/errors.log` con rotación automática |
+| 💾 **Backups automáticos** | La BD se respalda cada 6 horas en `backups/` (configurable) |
+| ⚙️ **Config centralizada** | Todas las variables en `.env` — nunca hardcodeadas en el código |
+| 🛡️ **Validaciones** | Stock y precio validados en BD + Pydantic en endpoints |
+| 🚨 **Manejo de errores** | Excepciones personalizadas con respuestas HTTP claras |
 
 ---
 
@@ -376,37 +408,43 @@ pending → confirmed → shipped → delivered
 
 ---
 
-## � Producción con PM2 (auto-restart)
+## 🖥️ Producción con PM2 (auto-restart)
 
-PM2 mantiene ambos servicios corriendo 24/7 y los reinicia automáticamente si se caen.
+PM2 mantiene los 3 servicios corriendo 24/7 y los reinicia automáticamente si se caen.
 
-### Instalación
+### Servicios gestionados
 
-```bash
-npm install -g pm2
-```
+| Servicio | Nombre PM2 | URL |
+|----------|-----------|-----|
+| Backend FastAPI | `instantvende-api` | http://localhost:8000 |
+| Bot WhatsApp | `instantvende-wa` | — |
+| Panel Admin | `instantvende-admin` | http://localhost:3000 |
 
 ### Iniciar todo con un comando
 
-```bat
-# Windows
+```bash
+# Windows — instala deps, compila frontend e inicia PM2
 start.bat
 
-# Mac/Linux
-pm2 start ecosystem.config.js
+# Mac / Linux — instala deps, compila frontend e inicia PM2
+chmod +x start.sh && ./start.sh
 ```
+
+> **Nota:** El panel de administración necesita compilarse (`npm run build`) antes de iniciarse con PM2. Los scripts `start.bat` y `start.sh` lo hacen automáticamente.
 
 ### Comandos útiles
 
 ```bash
-pm2 status                     # Estado de los servicios
-pm2 logs                       # Logs en tiempo real (ambos)
-pm2 logs instantvende-api      # Solo logs del backend
-pm2 logs instantvende-wa       # Solo logs de WhatsApp
-pm2 restart instantvende-api   # Reiniciar backend
-pm2 restart instantvende-wa    # Reiniciar WhatsApp
-pm2 stop all                   # Detener todo
-pm2 delete all                 # Quitar de PM2
+pm2 status                       # Estado de los 3 servicios
+pm2 logs                         # Logs en tiempo real (todos)
+pm2 logs instantvende-api        # Solo logs del backend
+pm2 logs instantvende-wa         # Solo logs de WhatsApp (ver QR aquí)
+pm2 logs instantvende-admin      # Solo logs del panel
+pm2 restart instantvende-api     # Reiniciar backend
+pm2 restart instantvende-wa      # Reiniciar WhatsApp
+pm2 restart instantvende-admin   # Reiniciar panel
+pm2 stop all                     # Detener todo
+pm2 delete all                   # Quitar de PM2
 ```
 
 ### Auto-arranque al reiniciar el servidor
@@ -422,7 +460,8 @@ pm2 save          # Guarda el estado actual para que arranque automático
 |--------|-----------|
 | Backend cuelgue/crash | PM2 reinicia el proceso automáticamente |
 | WhatsApp client cae | PM2 reinicia (espera 5s para evitar loop) |
-| Timeout de Ollama (45s) | El bot responde con mensaje de fallback, sin reinicio |
+| Panel admin cae | PM2 reinicia automáticamente |
+| Timeout de Ollama | El bot responde con mensaje de fallback, sin reinicio |
 | Backend no responde (ECONNREFUSED) | WhatsApp client envía mensaje de error al cliente |
 | Backend usa >500MB RAM | PM2 reinicia el proceso para liberar memoria |
 
@@ -451,33 +490,26 @@ El panel de administración es una aplicación React moderna con diseño "Dark G
 | 🛒 **Pedidos** | Gestión de estados, detalle de pedidos y filtros |
 | 🤖 **Perfil del Bot** | Editor completo de identidad, horarios, envíos y IA |
 
-### Instalación del frontend
+### Modo desarrollo (hot-reload)
 
 ```bash
 cd frontend
 npm install
-```
-
-### Desarrollo
-
-```bash
-cd frontend
 npm run dev
-# Abre http://localhost:3000
+# → http://localhost:3000  (con proxy a backend en :8000)
 ```
 
-### Producción
+### Modo producción con PM2
+
+Los scripts `start.bat` / `start.sh` hacen esto automáticamente. Para hacerlo a mano:
 
 ```bash
 cd frontend
+npm install
 npm run build          # Genera dist/
-npm run preview        # Sirve el build en el puerto 3000
-```
-
-O con PM2 (incluido en `ecosystem.config.js`):
-
-```bash
+cd ..
 pm2 start ecosystem.config.js --only instantvende-admin
+# → http://localhost:3000
 ```
 
 ### Configuración
