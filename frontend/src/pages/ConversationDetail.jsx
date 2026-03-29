@@ -8,10 +8,9 @@ import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 
-function maskPhone(phone) {
-  if (!phone) return '****'
-  const str = String(phone)
-  return '****' + str.slice(-4)
+function formatPhone(phone) {
+  if (!phone) return 'Sin número'
+  return String(phone)
 }
 
 export default function ConversationDetail() {
@@ -49,10 +48,11 @@ export default function ConversationDetail() {
   const handleToggle = async () => {
     if (!conv) return
     setToggling(true)
+    const newState = !conv.bot_active
     try {
-      await toggleBot(conv.id)
-      setConv((c) => ({ ...c, bot_active: !c.bot_active }))
-      toast.success(`Bot ${conv.bot_active ? 'desactivado' : 'activado'}`)
+      await toggleBot(conv.id, newState)
+      setConv((c) => ({ ...c, bot_active: newState }))
+      toast.success(`Bot ${newState ? 'activado' : 'desactivado'}`)
     } catch {
       toast.error('Error al cambiar el estado del bot')
     } finally {
@@ -71,7 +71,7 @@ export default function ConversationDetail() {
     )
   }
 
-  const clientLabel = conv?.customer_name || maskPhone(conv?.phone_number)
+  const clientLabel = conv?.customer_name || formatPhone(conv?.phone_number)
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
@@ -84,12 +84,12 @@ export default function ConversationDetail() {
         <Card className="flex flex-col gap-4">
           <div className="flex flex-col items-center gap-3 text-center">
             <div className="w-16 h-16 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-2xl font-bold">
-              {clientLabel.slice(-1).toUpperCase()}
+              {clientLabel.slice(0, 1).toUpperCase()}
             </div>
             <div>
               <p className="text-slate-800 font-semibold text-lg">{clientLabel}</p>
               {conv?.customer_name && (
-                <p className="text-slate-400 text-xs">{maskPhone(conv?.phone_number)}</p>
+                <p className="text-slate-400 text-xs">{formatPhone(conv?.phone_number)}</p>
               )}
               <p className="text-slate-400 text-xs">Cliente</p>
             </div>

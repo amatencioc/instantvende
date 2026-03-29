@@ -11,10 +11,9 @@ import Button from '../components/ui/Button.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 
-function maskPhone(phone) {
-  if (!phone) return '****'
-  const str = String(phone)
-  return '****' + str.slice(-4)
+function formatPhone(phone) {
+  if (!phone) return 'Sin número'
+  return String(phone)
 }
 
 function relativeDate(dateStr) {
@@ -63,14 +62,15 @@ export default function Conversations() {
   const handleToggle = async (e, conv) => {
     e.stopPropagation()
     setToggling(conv.id)
+    const newState = !conv.bot_active
     try {
-      await toggleBot(conv.id)
+      await toggleBot(conv.id, newState)
       setConversations((prev) =>
         prev.map((c) =>
-          c.id === conv.id ? { ...c, bot_active: !c.bot_active } : c
+          c.id === conv.id ? { ...c, bot_active: newState } : c
         )
       )
-      toast.success(`Bot ${conv.bot_active ? 'desactivado' : 'activado'}`)
+      toast.success(`Bot ${newState ? 'activado' : 'desactivado'}`)
     } catch {
       toast.error('Error al cambiar estado del bot')
     } finally {
@@ -156,14 +156,14 @@ export default function Conversations() {
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
                           <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold flex-shrink-0">
-                            {maskPhone(conv.phone_number).slice(-1)}
+                            {conv.customer_name ? conv.customer_name.slice(0, 1).toUpperCase() : formatPhone(conv.phone_number).slice(-2, -1)}
                           </div>
                           <div>
                             {conv.customer_name && (
                               <p className="text-slate-800 font-medium text-xs">{conv.customer_name}</p>
                             )}
                             <span className="text-slate-500 text-xs">
-                              {maskPhone(conv.phone_number)}
+                              {formatPhone(conv.phone_number)}
                             </span>
                           </div>
                         </div>
