@@ -2,11 +2,10 @@ module.exports = {
   apps: [
     {
       name: 'instantvende-api',
-      script: 'uvicorn',
-      args: 'main:app --host 0.0.0.0 --port 8000',
+      script: './backend/venv/Scripts/python.exe',
+      args: '-m uvicorn main:app --host 0.0.0.0 --port 8000',
       cwd: './backend',
-      interpreter: 'python',
-      interpreter_args: '-m',
+      interpreter: 'none',
       // Reiniciar si usa más de 500MB RAM (ej: Ollama se queda cargado)
       max_memory_restart: '500M',
       // Reiniciar automáticamente si el proceso muere
@@ -29,8 +28,8 @@ module.exports = {
     },
     {
       name: 'instantvende-wa',
-      script: './whatsapp/whatsapp_client.js',
-      cwd: '.',
+      script: './whatsapp_client.js',
+      cwd: './whatsapp',
       interpreter: 'node',
       autorestart: true,
       restart_delay: 5000,
@@ -48,9 +47,10 @@ module.exports = {
     },
     {
       name: 'instantvende-admin',
-      script: 'npm',
-      args: 'run preview',
+      script: './node_modules/vite/bin/vite.js',
+      args: 'preview --port 4173',
       cwd: './frontend',
+      interpreter: 'node',
       env: {
         NODE_ENV: 'production'
       },
