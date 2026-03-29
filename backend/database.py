@@ -1,42 +1,30 @@
-import sqlite3
-from pathlib import Path
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey
+from sqlalchemy import create_engine, event, Column, Integer, String, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, validates
-from datetime import datetime
-
-# ===== BACKUPS =====
-_BACKUP_DIR = Path("./backups")
-
-
-def backup_database() -> str:
-    """Crea un backup timestamped usando la API nativa de SQLite (consistente incluso bajo carga)."""
-    _BACKUP_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    backup_path = _BACKUP_DIR / f"instantvende_{timestamp}.db"
-    source = sqlite3.connect("./instantvende.db")
-    dest = sqlite3.connect(str(backup_path))
-    try:
-        source.backup(dest)
-    finally:
-        dest.close()
-        source.close()
-    return str(backup_path)
-
-
-def cleanup_old_backups(max_backups: int = 10) -> None:
-    """Elimina los backups más antiguos, conservando solo max_backups archivos."""
-    if not _BACKUP_DIR.exists():
-        return
-    backups = sorted(_BACKUP_DIR.glob("instantvende_*.db"))
-    while len(backups) > max_backups:
-        backups.pop(0).unlink(missing_ok=True)
+from datetime import datetime, timezone
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./instantvende.db"
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
-    connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 30,            # esperar hasta 30s si la DB está bloqueada
+    },
+    pool_size=1,                  # SQLite solo soporta 1 escritor a la vez
+    max_overflow=0,               # no crear conexiones extra
+    pool_pre_ping=True,           # verificar conexión antes de usarla
 )
+
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")      # WAL permite lecturas concurrentes
+    cursor.execute("PRAGMA synchronous=NORMAL")    # balance entre seguridad y velocidad
+    cursor.execute("PRAGMA cache_size=-64000")     # 64MB de caché
+    cursor.execute("PRAGMA foreign_keys=ON")       # integridad referencial
+    cursor.execute("PRAGMA busy_timeout=30000")    # 30s timeout en Python level también
+    cursor.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -49,8 +37,7 @@ class Product(Base):
     price = Column(Integer)
     stock = Column(Integer, default=0)
     image_url = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    version = Column(Integer, default=1)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     @validates("stock")
     def validate_stock(self, key: str, value: int) -> int:
@@ -73,7 +60,7 @@ class Conversation(Base):
     phone = Column(String, unique=True, index=True)
     customer_name = Column(String, nullable=True)
     bot_enabled = Column(Boolean, default=True)
-    last_message_at = Column(DateTime, default=datetime.utcnow)
+    last_message_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Message(Base):
     __tablename__ = "messages"
@@ -82,7 +69,7 @@ class Message(Base):
     conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True)
     content = Column(Text)
     from_customer = Column(Boolean)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class CartItem(Base):
@@ -92,7 +79,7 @@ class CartItem(Base):
     conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True)
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer, default=1)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     product = relationship("Product")
 
@@ -106,8 +93,8 @@ class Order(Base):
     total = Column(Integer)          # stored in cents
     status = Column(String, default="pending")  # pending, confirmed, shipped, delivered, cancelled
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     items = relationship("OrderItem", back_populates="order")
 
@@ -131,7 +118,7 @@ class BotProfile(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     profile_json = Column(Text, nullable=False)   # JSON completo del perfil
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     updated_by = Column(String, nullable=True)    # quién hizo el último cambio
 
 
