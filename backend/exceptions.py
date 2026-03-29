@@ -53,6 +53,11 @@ class InvalidStatusTransitionException(InstantVendeException):
     detail = "Transición de estado inválida"
 
 
+class RateLimitException(InstantVendeException):
+    status_code = 429
+    detail = "Demasiadas solicitudes, espera un momento"
+
+
 # ---------------------------------------------------------------------------
 # Context manager para operaciones de BD
 # ---------------------------------------------------------------------------
@@ -108,4 +113,13 @@ def setup_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=503,
             content={"detail": "Base de datos no disponible temporalmente", "error": "OperationalError"},
+        )
+
+    @app.exception_handler(RateLimitException)
+    async def rate_limit_exception_handler(
+        request: Request, exc: RateLimitException
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": exc.detail, "error": "RateLimitException"},
         )
