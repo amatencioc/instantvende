@@ -151,25 +151,49 @@ def build_faq_responses(profile: dict) -> dict:
     }
 
 # ===== KEYWORDS PARA FAQ =====
-FAQ_KEYWORDS = {
+# ===== KEYWORDS PARA FAQ (base genérica — se extiende con valores del perfil activo) =====
+_FAQ_KEYWORDS_BASE = {
     "horario":    ["horario", "hora", "cuando abren", "cuando cierran", "atienden", "abierto",
                    "disponible hoy", "abren", "trabajan"],
     "envio":      ["envio", "envío", "delivery", "despacho", "entregar", "llega", "demora",
-                   "tiempo de entrega", "cuanto demora", "olva", "shalom", "courier",
+                   "tiempo de entrega", "cuanto demora", "courier",
                    "provincia", "envian", "envían"],
-    "pago":       ["pago", "pagar", "transferencia", "yape", "plin", "efectivo", "bcp",
-                   "interbank", "deposito", "depósito", "como pago", "cómo pago"],
+    "pago":       ["pago", "pagar", "transferencia", "efectivo",
+                   "deposito", "depósito", "como pago", "cómo pago"],
     "garantia":   ["garantia", "garantía", "calidad", "original", "es bueno", "sirve",
                    "funciona", "confiable", "seguro"],
     "devolucion": ["devolucion", "devolución", "cambio", "cambiar", "devolver", "mal estado",
                    "defecto", "falla", "no funciono", "no funcionó", "reembolso"],
     "ubicacion":  ["ubicacion", "ubicación", "dirección", "donde", "direccion", "local",
-                   "tienda", "miraflores", "visitar", "ir a la tienda"],
+                   "tienda", "visitar", "ir a la tienda"],
     "descuento":  ["descuento", "promo", "promocion", "promoción", "oferta", "barato",
                    "precio especial", "rebaja", "mas barato", "más barato"],
     "combo":      ["combo", "kit", "pack", "paquete", "varios productos", "set",
                    "todos los productos", "conjunto"],
 }
+
+
+def build_faq_keywords(profile: dict) -> dict:
+    """Extiende los keywords de FAQ con valores dinámicos del perfil activo."""
+    keywords = {k: list(v) for k, v in _FAQ_KEYWORDS_BASE.items()}
+    # Carriers del perfil → keywords de envío
+    for carrier in get_field(profile, "shipping", "carriers", default=[]):
+        kw = carrier.lower().strip()
+        if kw and kw not in keywords["envio"]:
+            keywords["envio"].append(kw)
+    # Métodos de pago → palabras clave de pago
+    for method in get_field(profile, "payments", "methods", default=[]):
+        for word in re.split(r"[\s/]+", method.lower()):
+            word = word.strip(".,")
+            if len(word) > 2 and word not in keywords["pago"]:
+                keywords["pago"].append(word)
+    # Dirección / nombre de tienda → palabras clave de ubicación
+    address = get_field(profile, "store", "address", default="")
+    for part in re.split(r"[,\s]+", address.lower()):
+        part = part.strip(".,")
+        if len(part) > 3 and not part.isdigit() and part not in keywords["ubicacion"]:
+            keywords["ubicacion"].append(part)
+    return keywords
 
 # ===== COMANDOS DEL BOT =====
 BOT_COMMANDS = {
@@ -288,7 +312,7 @@ PRICE_OBJECTION_TRIGGERS = [
 ]
 
 
-def detect_intent(message: str) -> dict:
+def detect_intent(message: str, profile: dict | None = None) -> dict:
     """Detecta la intención del mensaje del cliente con tipos extendidos"""
     message_lower = message.lower().strip()
 
@@ -324,7 +348,8 @@ def detect_intent(message: str) -> dict:
         return intent
 
     # --- FAQ (alta prioridad si hay match directo) ---
-    for topic, keywords in FAQ_KEYWORDS.items():
+    faq_kws = build_faq_keywords(profile) if profile else _FAQ_KEYWORDS_BASE
+    for topic, keywords in faq_kws.items():
         matched = [kw for kw in keywords if kw in message_lower]
         if matched:
             intent["type"] = "faq"
@@ -379,11 +404,21 @@ def detect_intent(message: str) -> dict:
     return intent
 
 
-def get_greeting_by_time() -> str:
-    """Devuelve saludo según hora de Perú (UTC-5)"""
-    from datetime import timezone, timedelta
-    peru_tz = timezone(timedelta(hours=-5))
-    hour = datetime.now(peru_tz).hour
+def get_greeting_by_time(timezone_str: str = "America/Lima") -> str:
+    """Devuelve saludo según la zona horaria configurada en el perfil del bot."""
+    _fallback_offsets = {
+        "America/Lima": -5, "America/Bogota": -5, "America/Guayaquil": -5,
+        "America/Santiago": -4, "America/Mexico_City": -6, "America/Caracas": -4,
+        "America/Buenos_Aires": -3, "America/Sao_Paulo": -3,
+    }
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(timezone_str)
+        hour = datetime.now(tz).hour
+    except Exception:
+        from datetime import timezone as _tz, timedelta
+        offset = _fallback_offsets.get(timezone_str, -5)
+        hour = datetime.now(_tz(timedelta(hours=offset))).hour
     if hour < 12:
         return "Buenos días"
     elif hour < 20:
@@ -671,7 +706,7 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
     ai_desc_chars = profile.get("catalog", {}).get("ai_description_chars", 90)
 
     # Detectar intención del mensaje
-    intent = detect_intent(message)
+    intent = detect_intent(message, profile)
 
     # Si es una pregunta FAQ, responder directamente (más rápido)
     if intent["type"] == "faq" and intent["faq_topic"]:
@@ -681,7 +716,8 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
 
     # Si es saludo
     if intent["type"] == "greeting":
-        saludo = get_greeting_by_time()
+        tz_str = get_field(profile, "schedule", "timezone", default="America/Lima")
+        saludo = get_greeting_by_time(tz_str)
         is_returning = bool(conversation_history)
         if is_returning:
             templates = msgs_cfg.get("greeting_returning", [
@@ -752,7 +788,7 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
     elif intent["type"] == "purchase":
         intent_hint = "\n\n💰 El cliente QUIERE COMPRAR. Confirma disponibilidad, menciona precio y redirige a *#catalogo* o *agregar [número]*."
 
-    saludo_hora = get_greeting_by_time()
+    saludo_hora = get_greeting_by_time(get_field(profile, "schedule", "timezone", default="America/Lima"))
 
     # Construir el system prompt desde la plantilla del perfil
     catchphrases = get_field(profile, "bot", "catchphrases", default=[])
@@ -1012,6 +1048,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                         db.commit()  # commit atómico de TODO
 
                         total = confirmed_total
+                        _payment_str = ", ".join(get_field(profile, "payments", "methods", default=["Yape", "Plin"]))
                         ai_response = (
                             f"✅ *¡PEDIDO CONFIRMADO!*\n"
                             f"─────────────────────────\n"
@@ -1019,7 +1056,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                             f"💰 Total: S/ {total / 100:.2f}\n"
                             f"📋 Estado: Pendiente de confirmación\n\n"
                             f"📞 Te contactaremos para coordinar pago y envío.\n"
-                            f"💳 Pagos: Yape, Plin, transferencia\n\n"
+                            f"💳 Pagos: {_payment_str}\n\n"
                             f"¡Gracias por tu compra! 🙌"
                         )
                         log_with_context(logger, "info", "Pedido creado", order_id=order.id, total=total)
@@ -1033,7 +1070,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         log_with_context(logger, "info", "Comando: limpiar carrito", deleted=deleted)
 
     elif command == "help":
-        ai_response = BOT_HELP_TEXT
+        ai_response = msgs_cfg.get("bot_help_text") or BOT_HELP_TEXT
         log_with_context(logger, "info", "Comando: ayuda")
 
     elif command == "status":
