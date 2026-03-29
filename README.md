@@ -433,3 +433,67 @@ Los logs se guardan en `./logs/` con timestamp.
 ## �📝 Licencia
 
 MIT — Libre para uso personal y comercial.
+
+---
+
+## 🖥️ Panel de Administración Web
+
+El panel de administración es una aplicación React moderna con diseño "Dark Glass Morphism" que permite gestionar todos los aspectos de InstantVende desde el navegador.
+
+### Características
+
+| Módulo | Descripción |
+|--------|-------------|
+| 📊 **Dashboard** | KPIs, gráficas de pedidos por estado y top productos |
+| 💬 **Conversaciones** | Lista de chats con toggle de bot inline y búsqueda |
+| 💬 **Chat detalle** | Historial de mensajes estilo WhatsApp con burbujas |
+| 📦 **Productos** | CRUD completo con imágenes, precios y stock |
+| 🛒 **Pedidos** | Gestión de estados, detalle de pedidos y filtros |
+| 🤖 **Perfil del Bot** | Editor completo de identidad, horarios, envíos y IA |
+
+### Instalación del frontend
+
+```bash
+cd frontend
+npm install
+```
+
+### Desarrollo
+
+```bash
+cd frontend
+npm run dev
+# Abre http://localhost:3000
+```
+
+### Producción
+
+```bash
+cd frontend
+npm run build          # Genera dist/
+npm run preview        # Sirve el build en el puerto 3000
+```
+
+O con PM2 (incluido en `ecosystem.config.js`):
+
+```bash
+pm2 start ecosystem.config.js --only instantvende-admin
+```
+
+### Configuración
+
+Copia `.env.example` a `.env` en el directorio `frontend/`:
+
+```bash
+cp frontend/.env.example frontend/.env
+```
+
+Variables disponibles:
+
+| Variable | Default | Descripción |
+|----------|---------|-------------|
+| `VITE_API_URL` | `http://localhost:8000` | URL del backend FastAPI |
+
+### Autenticación
+
+El panel usa la misma `API_SECRET_KEY` configurada en el backend. Al abrir el panel por primera vez, se pedirá la clave que se guarda en `localStorage`.

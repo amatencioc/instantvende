@@ -1,0 +1,184 @@
+import { useEffect, useRef, useState } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { ArrowLeft, Bot, BotOff } from 'lucide-react'
+import toast from 'react-hot-toast'
+import { getConversationMessages, toggleBot, getConversations } from '../api/conversations.js'
+import Card from '../components/ui/Card.jsx'
+import Button from '../components/ui/Button.jsx'
+import Badge from '../components/ui/Badge.jsx'
+import { SkeletonCard } from '../components/ui/Skeleton.jsx'
+
+function maskPhone(phone) {
+  if (!phone) return '****'
+  const str = String(phone)
+  return '****' + str.slice(-4)
+}
+
+export default function ConversationDetail() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const [messages, setMessages] = useState([])
+  const [conv, setConv] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [toggling, setToggling] = useState(false)
+  const bottomRef = useRef(null)
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [msgsRes, convsRes] = await Promise.all([
+          getConversationMessages(id),
+          getConversations(),
+        ])
+        setMessages(msgsRes.data)
+        const found = convsRes.data.find((c) => String(c.id) === String(id))
+        setConv(found || null)
+      } catch {
+        toast.error('Error cargando la conversación')
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [id])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  const handleToggle = async () => {
+    if (!conv) return
+    setToggling(true)
+    try {
+      await toggleBot(conv.id)
+      setConv((c) => ({ ...c, bot_active: !c.bot_active }))
+      toast.success(`Bot ${conv.bot_active ? 'desactivado' : 'activado'}`)
+    } catch {
+      toast.error('Error al cambiar el estado del bot')
+    } finally {
+      setToggling(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <SkeletonCard />
+        <div className="lg:col-span-2 flex flex-col gap-2">
+          {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
+      {/* Left panel */}
+      <div className="flex flex-col gap-4">
+        <Button variant="secondary" onClick={() => navigate('/conversations')} className="self-start">
+          <ArrowLeft size={16} /> Volver
+        </Button>
+
+        <Card className="flex flex-col gap-4">
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center text-white text-2xl font-bold">
+              {maskPhone(conv?.phone_number).slice(-1)}
+            </div>
+            <div>
+              <p className="text-white font-semibold text-lg">
+                {maskPhone(conv?.phone_number)}
+              </p>
+              <p className="text-white/40 text-xs">Cliente</p>
+            </div>
+          </div>
+
+          <div className="border-t border-white/10 pt-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-white/50 text-sm">Estado del bot</span>
+              <Badge variant={conv?.bot_active ? 'green' : 'red'}>
+                {conv?.bot_active ? 'Activo' : 'Inactivo'}
+              </Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-white/50 text-sm">Mensajes</span>
+              <span className="text-white text-sm font-medium">{messages.length}</span>
+            </div>
+            {conv?.created_at && (
+              <div className="flex items-center justify-between">
+                <span className="text-white/50 text-sm">Inicio</span>
+                <span className="text-white/70 text-xs">
+                  {new Date(conv.created_at).toLocaleDateString('es-PE')}
+                </span>
+              </div>
+            )}
+          </div>
+
+          <Button
+            variant={conv?.bot_active ? 'danger' : 'secondary'}
+            onClick={handleToggle}
+            loading={toggling}
+            className="w-full"
+          >
+            {conv?.bot_active ? (
+              <><BotOff size={16} /> Desactivar bot</>
+            ) : (
+              <><Bot size={16} /> Activar bot</>
+            )}
+          </Button>
+        </Card>
+      </div>
+
+      {/* Right panel — chat */}
+      <Card className="lg:col-span-2 flex flex-col p-0 overflow-hidden">
+        {/* Header */}
+        <div className="p-4 border-b border-white/10">
+          <p className="text-white font-medium text-sm">Historial de mensajes</p>
+          {conv && !conv.bot_active && (
+            <div className="mt-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs flex items-center gap-2">
+              <BotOff size={14} />
+              Bot desactivado — respondiendo manualmente
+            </div>
+          )}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+          {messages.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-white/30 text-sm">
+              Sin mensajes
+            </div>
+          ) : (
+            messages.map((msg, i) => {
+              const isBot = msg.is_bot || msg.role === 'assistant' || msg.sender === 'bot'
+              return (
+                <div
+                  key={msg.id ?? i}
+                  className={`flex ${isBot ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm ${
+                      isBot
+                        ? 'bg-violet-600/40 text-white rounded-br-md'
+                        : 'bg-white/10 text-white/90 rounded-bl-md'
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap break-words">{msg.content || msg.text || msg.message}</p>
+                    {msg.created_at && (
+                      <p className={`text-xs mt-1 ${isBot ? 'text-violet-300/60' : 'text-white/30'}`}>
+                        {new Date(msg.created_at).toLocaleTimeString('es-PE', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )
+            })
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </Card>
+    </div>
+  )
+}
