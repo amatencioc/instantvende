@@ -5,17 +5,23 @@ backend/*.pyo
 backend/*.db
 backend/venv/
 backend/.env
-backend/.env.*
+backend/.env.local
+backend/.env.production
 
 # ===== WHATSAPP (Node.js) =====
 whatsapp/node_modules/
 whatsapp/.wwebjs_cache/
 whatsapp/whatsapp-session/
 whatsapp/.env
-whatsapp/.env.*
+whatsapp/.env.local
+whatsapp/.env.production
 
 # ===== PM2 =====
 logs/
+
+# ===== BACKUPS =====
+backups/
+*.db-backup
 
 # ===== General =====
 .DS_Store

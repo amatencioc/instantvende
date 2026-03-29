@@ -182,7 +182,44 @@ instantvende-mvp/
 
 ---
 
-## 🚀 Instalación y uso
+## 🔒 Configuración de Seguridad (Fase 1)
+
+### Variables de entorno
+
+Antes de ejecutar el proyecto, crea los archivos `.env` copiando los templates:
+
+```bash
+# Backend
+cp backend/.env.example backend/.env
+
+# WhatsApp client
+cp whatsapp/.env.example whatsapp/.env
+```
+
+### Generar API Key segura
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Copia el valor generado en:
+- `backend/.env` → `API_SECRET_KEY=<valor>`
+- `whatsapp/.env` → `BACKEND_API_KEY=<valor>` (debe ser el mismo)
+
+### Nuevas características de seguridad
+
+| Característica | Descripción |
+|----------------|-------------|
+| 🔑 **API Keys** | Todos los endpoints críticos requieren `X-API-Key` en el header |
+| 📋 **Logging JSON** | Logs estructurados en `logs/app.log` y `logs/errors.log` con rotación automática |
+| 💾 **Backups automáticos** | La BD se respalda cada 6 horas en `backups/` (configurable) |
+| ⚙️ **Config centralizada** | Todas las variables en `.env` — nunca hardcodeadas en el código |
+| 🛡️ **Validaciones** | Stock y precio validados en BD + Pydantic en endpoints |
+| 🚨 **Manejo de errores** | Excepciones personalizadas con respuestas HTTP claras |
+
+---
+
+
 
 ### Prerequisitos
 

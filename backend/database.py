@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, validates
 from datetime import datetime
 
 # ===== BACKUPS =====
@@ -44,12 +44,27 @@ class Product(Base):
     __tablename__ = "products"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
+    name = Column(String, nullable=False, unique=True)
     description = Column(Text)
     price = Column(Integer)
     stock = Column(Integer, default=0)
     image_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    version = Column(Integer, default=1)
+
+    @validates("stock")
+    def validate_stock(self, key: str, value: int) -> int:
+        if value < 0:
+            raise ValueError("El stock no puede ser negativo")
+        return value
+
+    @validates("price")
+    def validate_price(self, key: str, value: int) -> int:
+        if value < 1:
+            raise ValueError("El precio debe ser mayor a 0 centavos")
+        if value > 100_000_00:
+            raise ValueError("El precio excede el límite permitido")
+        return value
 
 class Conversation(Base):
     __tablename__ = "conversations"
