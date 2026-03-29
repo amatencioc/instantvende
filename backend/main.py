@@ -677,6 +677,7 @@ def get_products(db: Session = Depends(get_db), _: str = Depends(verify_api_key)
 @app.post("/api/products")
 def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     with handle_db_errors(db):
+        existing = db.query(Product).filter(Product.name == product.name).first()
         if existing:
             raise ProductDuplicateException(f"Ya existe un producto con el nombre '{product.name}'")
         db_product = Product(**product.model_dump())
@@ -1114,7 +1115,8 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                 ).with_for_update().first()
 
                 if not locked_product or locked_product.stock < 1:
-                    ai_response = f"⚠️ Lo siento, ese producto está agotado.\n\nEscribe *#catalogo* para ver otros productos disponibles."
+                    product_name = locked_product.name if locked_product else "ese producto"
+                    ai_response = f"⚠️ Lo siento, *{product_name}* está agotado.\n\nEscribe *#catalogo* para ver otros productos disponibles."
                 else:
                     with handle_db_errors(db):
                         existing = db.query(CartItem).filter(
