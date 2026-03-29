@@ -2,7 +2,6 @@
 backend/__pycache__/
 backend/*.pyc
 backend/*.pyo
-backend/*.db
 backend/venv/
 backend/.env
 backend/.env.local
@@ -27,3 +26,4 @@ backups/
 .DS_Store
 Thumbs.db
 *.log
+*.db
