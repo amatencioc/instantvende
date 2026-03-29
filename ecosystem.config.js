@@ -1,3 +1,6 @@
+// En Linux/Mac Python 3 se llama 'python3'; en Windows es 'python'
+const pythonInterpreter = process.platform === 'win32' ? 'python' : 'python3';
+
 module.exports = {
   apps: [
     {
@@ -5,7 +8,7 @@ module.exports = {
       script: 'uvicorn',
       args: 'main:app --host 0.0.0.0 --port 8000',
       cwd: './backend',
-      interpreter: 'python',
+      interpreter: pythonInterpreter,
       interpreter_args: '-m',
       // Reiniciar si usa más de 500MB RAM (ej: Ollama se queda cargado)
       max_memory_restart: '500M',
@@ -36,8 +39,6 @@ module.exports = {
       restart_delay: 5000,
       max_restarts: 10,
       min_uptime: '10s',
-      // Watch para recargar si el archivo cambia (opcional, comentar en producción)
-      // watch: ['whatsapp/whatsapp_client.js'],
       env: {
         NODE_ENV: 'production'
       },
@@ -47,9 +48,10 @@ module.exports = {
       merge_logs: true
     },
     {
+      // Requiere haber ejecutado 'npm run build' en frontend/ antes de iniciar
       name: 'instantvende-admin',
-      script: 'npx',
-      args: 'vite preview --port 3000 --host',
+      script: 'npm',
+      args: 'run preview',
       cwd: './frontend',
       env: {
         NODE_ENV: 'production'
