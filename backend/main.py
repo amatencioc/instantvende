@@ -10,9 +10,10 @@ from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, field_validator
-from typing import List, Optional, Dict
-from datetime import datetime
+from typing import Generator, List, Optional, Dict
+from datetime import datetime, timezone
 import ollama
 
 from config import settings
@@ -45,7 +46,38 @@ if settings.OLLAMA_TIMEOUT < 10:
     )
 
 # ===== RATE LIMITING EN MEMORIA =====
-_message_cooldowns: dict[str, float] = {}
+
+class _BoundedCooldownStore:
+    """Store de rate limiting con límite de entradas y limpieza automática."""
+
+    def __init__(self, max_size: int = 10_000, ttl_seconds: float = 300):
+        self._store: dict[str, float] = {}
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+
+    def check_and_set(self, key: str, cooldown: float) -> bool:
+        """
+        Retorna True si está en cooldown (debe rechazar).
+        Retorna False si puede procesar (y registra el timestamp).
+        """
+        now = time.time()
+        with self._lock:
+            if len(self._store) >= self._max_size:
+                cutoff = now - self._ttl
+                expired = [k for k, v in self._store.items() if v < cutoff]
+                for k in expired:
+                    del self._store[k]
+
+            last_ts = self._store.get(key)
+            if last_ts is not None and (now - last_ts) < cooldown:
+                return True  # en cooldown
+
+            self._store[key] = now
+            return False  # libre para procesar
+
+
+_message_cooldowns = _BoundedCooldownStore(max_size=10_000, ttl_seconds=300)
 
 # ===== RESPUESTAS FRECUENTES (FAQ) =====
 
@@ -475,12 +507,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def get_or_create_conversation(db: Session, phone: str) -> "Conversation":
+    """Obtiene o crea una conversación de forma thread-safe."""
+    conversation = db.query(Conversation).filter(
+        Conversation.phone == phone
+    ).first()
+
+    if conversation:
+        return conversation
+
+    try:
+        conversation = Conversation(phone=phone)
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        return conversation
+    except IntegrityError:
+        db.rollback()
+        conversation = db.query(Conversation).filter(
+            Conversation.phone == phone
+        ).first()
+        if not conversation:
+            raise
+        return conversation
 
 class ProductCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -619,11 +676,10 @@ def get_products(db: Session = Depends(get_db), _: str = Depends(verify_api_key)
 
 @app.post("/api/products")
 def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    with handle_db_errors():
-        existing = db.query(Product).filter(Product.name == product.name).first()
+    with handle_db_errors(db):
         if existing:
             raise ProductDuplicateException(f"Ya existe un producto con el nombre '{product.name}'")
-        db_product = Product(**product.dict())
+        db_product = Product(**product.model_dump())
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
@@ -797,6 +853,7 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
             try:
                 response = future.result(timeout=settings.OLLAMA_TIMEOUT)
             except concurrent.futures.TimeoutError:
+                future.cancel()  # prevenir callbacks pendientes (no detiene el hilo en ejecución)
                 log_with_context(logger, "warning", "Ollama timeout", timeout=settings.OLLAMA_TIMEOUT)
                 return msgs_cfg.get(
                     "error_timeout",
@@ -856,32 +913,12 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     message_cooldown = settings.MESSAGE_COOLDOWN_SECONDS
 
     # Rate limiting: evitar procesamiento doble si el mismo número envía mensajes consecutivos
-    now = time.time()
-    # Limpiar entradas antiguas (> 5 minutos) para evitar memory leak
-    _COOLDOWN_CLEANUP_SECONDS = 300
-    stale_cutoff = now - _COOLDOWN_CLEANUP_SECONDS
-    stale_keys = [k for k, v in _message_cooldowns.items() if v < stale_cutoff]
-    for k in stale_keys:
-        del _message_cooldowns[k]
-
-    last_ts = _message_cooldowns.get(request.phone)
-    if last_ts is not None and (now - last_ts) < message_cooldown:
+    if _message_cooldowns.check_and_set(request.phone, message_cooldown):
         raise RateLimitException(msgs_cfg.get("rate_limit", "Un momento, estoy procesando tu mensaje anterior 🙏"))
-    _message_cooldowns[request.phone] = now
 
-    # 1. Buscar o crear conversación
-    conversation = db.query(Conversation).filter(
-        Conversation.phone == request.phone
-    ).first()
-
-    if not conversation:
-        conversation = Conversation(phone=request.phone)
-        db.add(conversation)
-        db.commit()
-        db.refresh(conversation)
-        log_with_context(logger, "info", "Nueva conversación creada", conversation_id=conversation.id)
-    else:
-        log_with_context(logger, "info", "Conversación existente", conversation_id=conversation.id)
+    # 1. Buscar o crear conversación (thread-safe)
+    conversation = get_or_create_conversation(db, request.phone)
+    log_with_context(logger, "info", "Conversación activa", conversation_id=conversation.id)
 
     # 2. Guardar mensaje del cliente
     customer_msg = Message(
@@ -954,49 +991,74 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                     "\n\nEscribe *#limpiar* para vaciar el carrito y volver a agregar."
                 )
             else:
-                # Crear pedido
-                with handle_db_errors():
+                # Crear pedido — transacción atómica con lock de stock para evitar race conditions
+                with handle_db_errors(db):
                     order = Order(
                         conversation_id=conversation.id,
                         phone=request.phone,
-                        total=total,
+                        total=0,  # se actualizará a confirmed_total antes del commit
                         status="pending"
                     )
                     db.add(order)
-                    db.commit()
-                    db.refresh(order)
+                    db.flush()  # obtener order.id sin hacer commit todavía
+
+                    confirmed_total = 0
+                    out_of_stock_atomic = []
 
                     # Crear items del pedido y descontar stock
                     for item in cart_items:
-                        product = products_dict.get(item.product_id)
-                        if product:
-                            db.add(OrderItem(
-                                order_id=order.id,
-                                product_id=product.id,
-                                product_name=product.name,
-                                product_price=product.price,
-                                quantity=item.quantity
-                            ))
-                            product.stock -= item.quantity
+                        product = db.query(Product).filter(
+                            Product.id == item.product_id
+                        ).with_for_update().first()
 
-                    # Vaciar carrito
-                    db.query(CartItem).filter(
-                        CartItem.conversation_id == conversation.id
-                    ).delete()
-                    db.commit()
+                        if not product:
+                            db.rollback()
+                            raise ProductNotFoundException(f"Producto {item.product_id} no encontrado")
 
-                _payment_str = ", ".join(get_field(profile, "payments", "methods", default=["Yape", "Plin"]))
-                ai_response = (
-                    f"✅ *¡PEDIDO CONFIRMADO!*\n"
-                    f"─────────────────────────\n"
-                    f"🔖 Pedido #{order.id}\n"
-                    f"💰 Total: S/ {total / 100:.2f}\n"
-                    f"📋 Estado: Pendiente de confirmación\n\n"
-                    f"📞 Te contactaremos para coordinar pago y envío.\n"
-                    f"💳 Pagos: {_payment_str}\n\n"
-                    f"¡Gracias por tu compra! 🙌"
-                )
-                log_with_context(logger, "info", "Pedido creado", order_id=order.id, total=total)
+                        if product.stock < item.quantity:
+                            out_of_stock_atomic.append(f"{product.name} (disponible: {product.stock})")
+                            continue
+
+                        db.add(OrderItem(
+                            order_id=order.id,
+                            product_id=product.id,
+                            product_name=product.name,
+                            product_price=product.price,
+                            quantity=item.quantity
+                        ))
+                        product.stock -= item.quantity
+                        confirmed_total += product.price * item.quantity
+
+                    if out_of_stock_atomic:
+                        db.rollback()
+                        ai_response = (
+                            f"⚠️ *Stock insuficiente para:*\n" +
+                            "\n".join(f"• {p}" for p in out_of_stock_atomic) +
+                            "\n\nEscribe *#limpiar* para vaciar el carrito y volver a agregar."
+                        )
+                    else:
+                        order.total = confirmed_total
+
+                        # Vaciar carrito dentro de la misma transacción
+                        db.query(CartItem).filter(
+                            CartItem.conversation_id == conversation.id
+                        ).delete()
+
+                        db.commit()  # commit atómico de TODO
+
+                        total = confirmed_total
+                        _payment_str = ", ".join(get_field(profile, "payments", "methods", default=["Yape", "Plin"]))
+                        ai_response = (
+                            f"✅ *¡PEDIDO CONFIRMADO!*\n"
+                            f"─────────────────────────\n"
+                            f"🔖 Pedido #{order.id}\n"
+                            f"💰 Total: S/ {total / 100:.2f}\n"
+                            f"📋 Estado: Pendiente de confirmación\n\n"
+                            f"📞 Te contactaremos para coordinar pago y envío.\n"
+                            f"💳 Pagos: {_payment_str}\n\n"
+                            f"¡Gracias por tu compra! 🙌"
+                        )
+                        log_with_context(logger, "info", "Pedido creado", order_id=order.id, total=total)
 
     elif command == "clear_cart":
         deleted = db.query(CartItem).filter(
@@ -1046,35 +1108,41 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
             if 1 <= product_num <= len(products):
                 product = products[product_num - 1]
 
-                if product.stock < 1:
-                    ai_response = f"⚠️ Lo siento, *{product.name}* está agotado.\n\nEscribe *#catalogo* para ver otros productos disponibles."
+                # Re-consultar con lock para evitar race condition de stock
+                locked_product = db.query(Product).filter(
+                    Product.id == product.id
+                ).with_for_update().first()
+
+                if not locked_product or locked_product.stock < 1:
+                    ai_response = f"⚠️ Lo siento, ese producto está agotado.\n\nEscribe *#catalogo* para ver otros productos disponibles."
                 else:
-                    existing = db.query(CartItem).filter(
-                        CartItem.conversation_id == conversation.id,
-                        CartItem.product_id == product.id
-                    ).first()
+                    with handle_db_errors(db):
+                        existing = db.query(CartItem).filter(
+                            CartItem.conversation_id == conversation.id,
+                            CartItem.product_id == locked_product.id
+                        ).with_for_update().first()
 
-                    if existing:
-                        existing.quantity += 1
-                    else:
-                        db.add(CartItem(
-                            conversation_id=conversation.id,
-                            product_id=product.id,
-                            quantity=1
-                        ))
-                    db.commit()
+                        if existing:
+                            existing.quantity += 1
+                        else:
+                            db.add(CartItem(
+                                conversation_id=conversation.id,
+                                product_id=locked_product.id,
+                                quantity=1
+                            ))
+                        db.commit()
 
-                    if product.image_url:
-                        media_url = product.image_url
+                    if locked_product.image_url:
+                        media_url = locked_product.image_url
 
                     ai_response = (
-                        f"✅ *{product.name}* agregado al carrito!\n"
-                        f"💰 Precio: S/ {product.price / 100:.2f}\n\n"
+                        f"✅ *{locked_product.name}* agregado al carrito!\n"
+                        f"💰 Precio: S/ {locked_product.price / 100:.2f}\n\n"
                         f"🛒 Ver carrito: *#carrito*\n"
                         f"📦 Confirmar pedido: *#pedido*\n"
                         f"📋 Seguir comprando: *#catalogo*"
                     )
-                    log_with_context(logger, "info", "Producto agregado al carrito", product_num=product_num, product_name=product.name)
+                    log_with_context(logger, "info", "Producto agregado al carrito", product_num=product_num, product_name=locked_product.name)
             else:
                 ai_response = f"⚠️ Número inválido. Escribe *#catalogo* para ver los productos disponibles (1 al {len(products)})."
         else:
@@ -1116,7 +1184,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     ))
 
     # 7. Actualizar timestamp
-    conversation.last_message_at = datetime.utcnow()
+    conversation.last_message_at = datetime.now(timezone.utc)
     db.commit()
 
     log_with_context(logger, "info", "Respuesta enviada", preview=ai_response[:60])
@@ -1126,7 +1194,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         "bot_enabled": True,
         "conversation_id": conversation.id,
         "media_url": media_url,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 # ===== ENDPOINTS DE CONVERSACIONES =====
@@ -1163,7 +1231,7 @@ def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db
     ).first()
     
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+        raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
     
     conversation.bot_enabled = enabled
     db.commit()
@@ -1185,13 +1253,13 @@ def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get
     """Agregar producto al carrito vía API"""
     conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+        raise ConversationNotFoundException(f"Conversación para teléfono {phone} no encontrada")
 
     product = db.query(Product).filter(Product.id == item.product_id).first()
     if not product:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
+        raise ProductNotFoundException(f"Producto {item.product_id} no encontrado")
     if product.stock < item.quantity:
-        raise HTTPException(status_code=400, detail=f"Stock insuficiente. Disponible: {product.stock}")
+        raise InsufficientStockException(f"Stock insuficiente. Disponible: {product.stock}")
 
     existing = db.query(CartItem).filter(
         CartItem.conversation_id == conversation.id,
@@ -1199,11 +1267,11 @@ def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get
     ).first()
 
     if existing:
-        with handle_db_errors():
+        with handle_db_errors(db):
             existing.quantity += item.quantity
             db.commit()
     else:
-        with handle_db_errors():
+        with handle_db_errors(db):
             db.add(CartItem(
                 conversation_id=conversation.id,
                 product_id=item.product_id,
@@ -1250,7 +1318,7 @@ def api_clear_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(v
     """Vaciar carrito de un cliente"""
     conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+        raise ConversationNotFoundException(f"Conversación para teléfono {phone} no encontrada")
     deleted = db.query(CartItem).filter(
         CartItem.conversation_id == conversation.id
     ).delete()
@@ -1298,7 +1366,7 @@ def get_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(ver
     """Obtener detalles de un pedido específico"""
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
-        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+        raise OrderNotFoundException(f"Pedido {order_id} no encontrado")
 
     items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     return {
@@ -1326,9 +1394,9 @@ def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = 
     """Actualizar estado de un pedido (y restaurar stock si se cancela)"""
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
-        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+        raise OrderNotFoundException(f"Pedido {order_id} no encontrado")
 
-    with handle_db_errors():
+    with handle_db_errors(db):
         # Restaurar stock si se cancela
         if update.status == "cancelled" and order.status != "cancelled":
             for item in db.query(OrderItem).filter(OrderItem.order_id == order_id).all():
@@ -1337,7 +1405,7 @@ def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = 
                     product.stock += item.quantity
 
         order.status = update.status
-        order.updated_at = datetime.utcnow()
+        order.updated_at = datetime.now(timezone.utc)
         db.commit()
 
     status_labels = {
@@ -1449,11 +1517,11 @@ def update_bot_profile(
     row = db.query(BotProfile).order_by(BotProfile.id.desc()).first()
     if row:
         row.profile_json = profile_json_str
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(timezone.utc)
     else:
         row = BotProfile(profile_json=profile_json_str)
         db.add(row)
-    with handle_db_errors():
+    with handle_db_errors(db):
         db.commit()
     invalidate_cache()
     log_with_context(logger, "info", "Perfil del bot actualizado")
@@ -1463,7 +1531,7 @@ def update_bot_profile(
 @app.post("/api/bot-profile/reset")
 def reset_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Restaurar el perfil por defecto eliminando el perfil guardado en DB."""
-    with handle_db_errors():
+    with handle_db_errors(db):
         db.query(BotProfile).delete()
         db.commit()
     invalidate_cache()
