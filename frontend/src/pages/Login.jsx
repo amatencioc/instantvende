@@ -18,7 +18,6 @@ export default function Login() {
     if (!apiKey.trim()) return
     setLoading(true)
     try {
-      // Temporarily set key to test it
       useAuthStore.setState({ apiKey: apiKey.trim() })
       await client.get('/api/products', {
         headers: { 'X-API-Key': apiKey.trim() },
@@ -35,40 +34,22 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Animated background orbs */}
-      <motion.div
-        animate={{ scale: [1, 1.2, 1], rotate: [0, 90, 0] }}
-        transition={{ duration: 15, repeat: Infinity, ease: 'linear' }}
-        className="bg-orb w-[600px] h-[600px] -top-48 -left-48"
-        style={{ background: 'radial-gradient(circle, #7c3aed, transparent)' }}
-      />
-      <motion.div
-        animate={{ scale: [1.2, 1, 1.2], rotate: [0, -90, 0] }}
-        transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
-        className="bg-orb w-[500px] h-[500px] -bottom-32 -right-32"
-        style={{ background: 'radial-gradient(circle, #06b6d4, transparent)' }}
-      />
-
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50 flex items-center justify-center p-4">
       <motion.div
         initial={{ opacity: 0, y: 24 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="relative z-10 w-full max-w-md"
+        className="w-full max-w-md"
       >
-        <div className="glass p-8 flex flex-col gap-6">
+        <div className="bg-white shadow-xl border border-slate-200 rounded-2xl p-8 flex flex-col gap-6">
           {/* Logo */}
           <div className="flex flex-col items-center gap-3">
-            <motion.div
-              animate={{ y: [0, -8, 0] }}
-              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-              className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center glow-violet"
-            >
+            <div className="w-16 h-16 rounded-2xl bg-indigo-600 flex items-center justify-center shadow-lg">
               <Zap size={32} className="text-white" />
-            </motion.div>
+            </div>
             <div className="text-center">
-              <h1 className="text-2xl font-bold gradient-text">InstantVende Admin</h1>
-              <p className="text-white/50 text-sm mt-1">
+              <h1 className="text-2xl font-bold text-indigo-600">InstantVende Admin</h1>
+              <p className="text-slate-500 text-sm mt-1">
                 Panel de administración web
               </p>
             </div>
@@ -77,7 +58,7 @@ export default function Login() {
           {/* Form */}
           <form onSubmit={handleConnect} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-white/70">
+              <label className="text-sm font-medium text-slate-700">
                 API Secret Key
               </label>
               <div className="relative">
@@ -86,20 +67,20 @@ export default function Login() {
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="sk-..."
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-12 text-white placeholder-white/20 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all duration-200"
+                  className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 pr-12 text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all duration-200"
                   autoComplete="current-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowKey(!showKey)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
                 >
                   {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
-              <p className="text-xs text-white/30">
+              <p className="text-xs text-slate-400">
                 Usa la clave configurada en tu archivo{' '}
-                <code className="text-violet-400">.env</code> del backend
+                <code className="text-indigo-600">.env</code> del backend
               </p>
             </div>
 
@@ -108,7 +89,7 @@ export default function Login() {
               disabled={loading || !apiKey.trim()}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-semibold text-sm transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 glow-violet"
+              className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>

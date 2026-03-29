@@ -1,13 +1,13 @@
 import clsx from 'clsx'
 
 const variants = {
-  green: 'bg-green-500/20 text-green-400 border border-green-500/30',
-  yellow: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-  blue: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
-  red: 'bg-red-500/20 text-red-400 border border-red-500/30',
-  cyan: 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30',
-  violet: 'bg-violet-500/20 text-violet-400 border border-violet-500/30',
-  gray: 'bg-white/10 text-white/60 border border-white/10',
+  green: 'bg-emerald-100 text-emerald-700 border border-emerald-200',
+  yellow: 'bg-amber-100 text-amber-700 border border-amber-200',
+  blue: 'bg-blue-100 text-blue-700 border border-blue-200',
+  red: 'bg-red-100 text-red-600 border border-red-200',
+  cyan: 'bg-cyan-100 text-cyan-700 border border-cyan-200',
+  violet: 'bg-violet-100 text-violet-700 border border-violet-200',
+  gray: 'bg-slate-100 text-slate-600 border border-slate-200',
 }
 
 export default function Badge({ children, variant = 'gray', className = '' }) {

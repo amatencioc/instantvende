@@ -23,10 +23,10 @@ export default function App() {
         position="top-right"
         toastOptions={{
           style: {
-            background: 'rgba(15,15,25,0.95)',
-            color: '#f8fafc',
-            border: '1px solid rgba(255,255,255,0.1)',
-            backdropFilter: 'blur(20px)',
+            background: '#ffffff',
+            color: '#0f172a',
+            border: '1px solid #e2e8f0',
+            boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
           },
         }}
       />

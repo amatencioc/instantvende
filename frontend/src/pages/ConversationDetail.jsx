@@ -71,6 +71,8 @@ export default function ConversationDetail() {
     )
   }
 
+  const clientLabel = conv?.customer_name || maskPhone(conv?.phone_number)
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
       {/* Left panel */}
@@ -81,32 +83,33 @@ export default function ConversationDetail() {
 
         <Card className="flex flex-col gap-4">
           <div className="flex flex-col items-center gap-3 text-center">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center text-white text-2xl font-bold">
-              {maskPhone(conv?.phone_number).slice(-1)}
+            <div className="w-16 h-16 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-2xl font-bold">
+              {clientLabel.slice(-1).toUpperCase()}
             </div>
             <div>
-              <p className="text-white font-semibold text-lg">
-                {maskPhone(conv?.phone_number)}
-              </p>
-              <p className="text-white/40 text-xs">Cliente</p>
+              <p className="text-slate-800 font-semibold text-lg">{clientLabel}</p>
+              {conv?.customer_name && (
+                <p className="text-slate-400 text-xs">{maskPhone(conv?.phone_number)}</p>
+              )}
+              <p className="text-slate-400 text-xs">Cliente</p>
             </div>
           </div>
 
-          <div className="border-t border-white/10 pt-4 flex flex-col gap-3">
+          <div className="border-t border-slate-200 pt-4 flex flex-col gap-3">
             <div className="flex items-center justify-between">
-              <span className="text-white/50 text-sm">Estado del bot</span>
-              <Badge variant={conv?.bot_active ? 'green' : 'red'}>
+              <span className="text-slate-500 text-sm">Estado del bot</span>
+              <Badge variant={conv?.bot_active ? 'green' : 'gray'}>
                 {conv?.bot_active ? 'Activo' : 'Inactivo'}
               </Badge>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-white/50 text-sm">Mensajes</span>
-              <span className="text-white text-sm font-medium">{messages.length}</span>
+              <span className="text-slate-500 text-sm">Mensajes</span>
+              <span className="text-slate-800 text-sm font-medium">{messages.length}</span>
             </div>
             {conv?.created_at && (
               <div className="flex items-center justify-between">
-                <span className="text-white/50 text-sm">Inicio</span>
-                <span className="text-white/70 text-xs">
+                <span className="text-slate-500 text-sm">Inicio</span>
+                <span className="text-slate-500 text-xs">
                   {new Date(conv.created_at).toLocaleDateString('es-PE')}
                 </span>
               </div>
@@ -114,7 +117,7 @@ export default function ConversationDetail() {
           </div>
 
           <Button
-            variant={conv?.bot_active ? 'danger' : 'secondary'}
+            variant={conv?.bot_active ? 'danger' : 'primary'}
             onClick={handleToggle}
             loading={toggling}
             className="w-full"
@@ -131,10 +134,15 @@ export default function ConversationDetail() {
       {/* Right panel — chat */}
       <Card className="lg:col-span-2 flex flex-col p-0 overflow-hidden">
         {/* Header */}
-        <div className="p-4 border-b border-white/10">
-          <p className="text-white font-medium text-sm">Historial de mensajes</p>
+        <div className="p-4 border-b border-slate-200">
+          <div className="flex items-center justify-between">
+            <p className="text-slate-800 font-medium text-sm">{clientLabel}</p>
+            <Badge variant={conv?.bot_active ? 'green' : 'gray'}>
+              {conv?.bot_active ? 'Bot activo' : 'Bot inactivo'}
+            </Badge>
+          </div>
           {conv && !conv.bot_active && (
-            <div className="mt-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs flex items-center gap-2">
+            <div className="mt-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs flex items-center gap-2">
               <BotOff size={14} />
               Bot desactivado — respondiendo manualmente
             </div>
@@ -142,9 +150,9 @@ export default function ConversationDetail() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 bg-slate-50">
           {messages.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-white/30 text-sm">
+            <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
               Sin mensajes
             </div>
           ) : (
@@ -158,13 +166,13 @@ export default function ConversationDetail() {
                   <div
                     className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm ${
                       isBot
-                        ? 'bg-violet-600/40 text-white rounded-br-md'
-                        : 'bg-white/10 text-white/90 rounded-bl-md'
+                        ? 'bg-indigo-600 text-white rounded-br-md'
+                        : 'bg-white text-slate-800 border border-slate-200 rounded-bl-md shadow-sm'
                     }`}
                   >
                     <p className="whitespace-pre-wrap break-words">{msg.content || msg.text || msg.message}</p>
                     {msg.created_at && (
-                      <p className={`text-xs mt-1 ${isBot ? 'text-violet-300/60' : 'text-white/30'}`}>
+                      <p className={`text-xs mt-1 ${isBot ? 'text-indigo-200' : 'text-slate-400'}`}>
                         {new Date(msg.created_at).toLocaleTimeString('es-PE', {
                           hour: '2-digit',
                           minute: '2-digit',

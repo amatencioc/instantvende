@@ -8,24 +8,14 @@ export default function Layout() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f]">
-      {/* Background orbs */}
-      <div
-        className="bg-orb w-96 h-96 top-0 left-0"
-        style={{ background: 'radial-gradient(circle, #7c3aed, transparent)' }}
-      />
-      <div
-        className="bg-orb w-80 h-80 bottom-0 right-0"
-        style={{ background: 'radial-gradient(circle, #06b6d4, transparent)' }}
-      />
-
+    <div className="min-h-screen bg-slate-50">
       <Sidebar />
       <Topbar />
 
       <motion.main
         animate={{ paddingLeft: sidebarOpen ? 256 : 88 }}
         transition={{ duration: 0.3, ease: 'easeInOut' }}
-        className="pt-16 min-h-screen relative z-10"
+        className="pt-16 min-h-screen"
       >
         <div className="p-6">
           <Outlet />
