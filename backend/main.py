@@ -367,10 +367,12 @@ def detect_intent(message: str, profile: dict | None = None) -> dict:
     # --- Saludo (primero: evita falsos positivos si el saludo tiene otras palabras) ---
     greeting_keywords = [
         "hola", "buenos dias", "buenos días", "buenas tardes", "buenas noches",
-        "buenas", "hey", "saludos", "buen dia", "buen día", "ola"
+        "buenas", "hey", "hi", "saludos", "buen dia", "buen día",
+        "ola", "wenas", "wenas tardes", "buenas tarde",  # variantes y errores tipográficos
+        "me brinda", "me pueden", "me puedes",  # frases de solicitud de atención
     ]
     matched_greetings = [kw for kw in greeting_keywords if kw in message_lower]
-    if matched_greetings and len(message_lower.split()) <= 5:
+    if matched_greetings and len(message_lower.split()) <= 10:
         intent["type"] = "greeting"
         intent["confidence"] = 0.95
         intent["signals"] = matched_greetings
@@ -910,7 +912,7 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
             log_with_context(logger, "warning", "Ollama timeout", timeout=settings.OLLAMA_TIMEOUT)
             return msgs_cfg.get(
                 "error_timeout",
-                "Disculpa la demora 🙏 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos.",
+                "¡Hola! 👋 Mientras proceso tu pregunta, echa un vistazo a nuestros productos con *#catalogo*. ¿Te puedo ayudar con algo específico? 😊",
             )
 
         elapsed = time.time() - start_time
@@ -1210,7 +1212,85 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
             else:
                 ai_response = "⚠️ Por favor indica el número de producto. Ejemplo: *agregar 1*"
 
-        # 5. Si no fue un comando → usar IA
+        # 5. Si no fue un comando → detección rápida de intención ANTES de llamar a IA
+        if ai_response is None:
+            quick_intent = detect_intent(request.message, profile)
+            log_with_context(logger, "info", "Intent rápido detectado", intent_type=quick_intent["type"], confidence=quick_intent["confidence"])
+
+            if quick_intent["type"] == "greeting":
+                # Nivel 1 — respuesta inmediata (0ms): saludo
+                tz_str = get_field(profile, "schedule", "timezone", default="America/Lima")
+                saludo = get_greeting_by_time(tz_str)
+                is_returning = bool(
+                    db.query(Message).filter(
+                        Message.conversation_id == conversation.id,
+                        Message.from_customer == False  # noqa: E712 — SQLAlchemy uses == for boolean filters
+                    ).first()
+                )
+                templates = msgs_cfg.get("greeting_returning" if is_returning else "greeting_new", [])
+                if not templates:
+                    store_name = get_field(profile, "store", "name", default="la tienda")
+                    templates = [
+                        f"¡{{saludo}}! 👋 Soy {{bot_name}} de *{{store_name}}*. Escribe *#catalogo* para ver todo. ¿En qué te puedo ayudar?",
+                    ] if not is_returning else [
+                        f"¡{{saludo}}! 👋 Qué bueno verte de nuevo. Soy {{bot_name}}. ¿En qué te ayudo hoy? 😄",
+                    ]
+                store_name = get_field(profile, "store", "name", default="la tienda")
+                ai_response = random.choice(templates).format(
+                    saludo=saludo,
+                    bot_name=bot_name,
+                    store_name=store_name,
+                )
+
+            elif quick_intent["type"] == "faq" and quick_intent.get("faq_topic"):
+                # Nivel 1 — respuesta inmediata: FAQ
+                faq = build_faq_responses(profile)
+                ai_response = faq.get(quick_intent["faq_topic"])
+
+            elif quick_intent["type"] == "goodbye":
+                # Nivel 1 — respuesta inmediata: despedida
+                templates = msgs_cfg.get("goodbye", [
+                    "¡Un placer atenderte! 🙌 Si necesitas algo más, aquí estoy. ¡Que te vaya bien!",
+                ])
+                ai_response = random.choice(templates)
+
+            elif quick_intent["type"] == "complaint":
+                # Nivel 1 — respuesta inmediata: queja
+                warranty_days = get_field(profile, "warranty", "days", default=30)
+                template = msgs_cfg.get(
+                    "complaint_response",
+                    "Oye, lamento mucho escuchar eso. 😔 Tu satisfacción es lo más importante. Cuéntame qué pasó y lo resolvemos de inmediato. Tenemos garantía de {warranty_days} días.",
+                )
+                ai_response = template.format(warranty_days=warranty_days)
+
+            elif quick_intent["type"] == "price_objection":
+                # Nivel 1 — respuesta inmediata: objeción de precio
+                discount_two = get_field(profile, "discounts", "two_products_pct", default=10)
+                template = msgs_cfg.get(
+                    "price_objection_response",
+                    "Entiendo perfectamente, el presupuesto importa. 💰 Tenemos opciones desde poco, y comprar 2 productos te da {discount_two}% de descuento. ¿Cuánto quieres invertir? 😊",
+                )
+                ai_response = template.format(discount_two=discount_two)
+
+            elif quick_intent["type"] in ("recommendation", "purchase"):
+                # Nivel 2 — respuesta rápida (<2s): mostrar catálogo inmediatamente sin IA
+                max_products_ctx = ai_cfg.get("max_products_in_context", 8)
+                products = db.query(Product).filter(Product.stock > 0).limit(max_products_ctx).all()
+                if products:
+                    catalog_text = generate_catalog(products, profile)
+                    context_msg = msgs_cfg.get(
+                        "recommendation_prompt",
+                        "¡Aquí tienes nuestro catálogo! 😊 Dime el número del producto que te interesa y te cuento más:",
+                    )
+                    ai_response = context_msg + "\n\n" + catalog_text
+                else:
+                    ai_response = msgs_cfg.get(
+                        "catalog_empty",
+                        "¡Hola! Por el momento estamos actualizando nuestro catálogo. Escribe *#ayuda* para ver qué puedo hacer por ti. 😊",
+                    )
+                log_with_context(logger, "info", "Catálogo mostrado por intent rápido", intent_type=quick_intent["type"])
+
+        # 5b. Si el intent rápido no resolvió → usar IA (solo para casos complejos/generales)
         if ai_response is None:
             history_limit = ai_cfg.get("history_messages_limit", settings.HISTORY_MESSAGES_LIMIT)
             recent_messages = db.query(Message).filter(
@@ -1237,6 +1317,14 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                 conversation_history=conversation_history,
                 recently_viewed=recently_viewed
             )
+
+        # Garantía final — jamás guardar ni responder con None
+        if ai_response is None:
+            ai_response = msgs_cfg.get(
+                "fallback_response",
+                "¡Hola! 👋 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos disponibles. 😊",
+            )
+            log_with_context(logger, "warning", "ai_response era None — usando fallback final")
 
         # 6. Guardar respuesta del bot
         db.add(Message(
