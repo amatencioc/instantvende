@@ -62,31 +62,30 @@
     "description": "satisfacción garantizada"
   },
   "ai": {
-    "ollama_temperature": 0.8,
-    "ollama_num_predict": 80,
-    "ollama_num_ctx": 1024,
+    "ollama_temperature": 0.6,
+    "ollama_num_predict": 300,
+    "ollama_num_ctx": 2048,
     "ollama_top_p": 0.9,
-    "ollama_repeat_penalty": 1.2,
+    "ollama_repeat_penalty": 1.1,
     "ollama_num_thread": 4,
-    "response_max_chars": 1000,
-    "history_messages_limit": 6,
-    "max_products_in_context": 8,
-    "max_recommendations": 3
+    "response_max_chars": 2000,
+    "history_messages_limit": 8,
+    "max_products_in_context": 10,
+    "max_recommendations": 4
   },
   "catalog": {
     "description_preview_chars": 60,
-    "ai_description_chars": 90
+    "ai_description_chars": 200,
+    "max_name_chars": 60
   },
   "messages": {
     "greeting_new": [
-      "¡{saludo}! 👋 Soy {bot_name} de *{store_name}*. Escribe *#catalogo* para ver todo. ¿Qué tipo de zapatos quieres cuidar?",
-      "¡{saludo}! 😊 Bienvenido a *{store_name}*. Tenemos todo para que tus zapatos luzcan como nuevos. ¿En qué te ayudo?",
-      "¡{saludo}! Mucho gusto, soy {bot_name}. 🎯 ¿Qué zapatos quieres recuperar?"
+      "¡{saludo}! 👋 Soy {bot_name}, asesor de *{store_name}*. Estoy aquí para ayudarte a encontrar el producto perfecto para el cuidado de tu calzado. Escribe *#catalogo* para ver todos nuestros productos disponibles. ¿En qué puedo ayudarte hoy?",
+      "¡{saludo}! 😊 Bienvenido a *{store_name}*. Soy {bot_name} y con gusto te ayudo a elegir el mejor producto. Escribe *#catalogo* para ver nuestro catálogo completo. ¿Qué tipo de calzado necesitas cuidar?"
     ],
     "greeting_returning": [
-      "¡{saludo}! 👋 Qué bueno verte de vuelta. Soy {bot_name}. ¿Volvemos con los zapatos? 😄",
-      "¡{saludo}! 😊 ¡Bienvenido de nuevo a {store_name}! ¿Qué necesitas?",
-      "¡{saludo}! Qué gusto que regreses. 🙌 ¿Qué tienes hoy para cuidar?"
+      "¡{saludo}! 👋 ¡Qué gusto verte de nuevo! Soy {bot_name}. ¿En qué puedo ayudarte hoy? Escribe *#catalogo* para ver nuestros productos o *#estado* para ver tu último pedido.",
+      "¡{saludo}! 😊 ¡Bienvenido de vuelta a *{store_name}*! ¿Buscas algo en especial hoy? Escribe *#catalogo* para ver todo lo disponible."
     ],
     "goodbye": [
       "¡Un placer atenderte! 🙌 Si necesitas algo más, aquí estoy. ¡Que te vaya bien!",
@@ -99,10 +98,11 @@
     "error_timeout": "¡Hola! 👋 Mientras proceso tu pregunta, echa un vistazo a nuestros productos con *#catalogo*. ¿Te puedo ayudar con algo específico? 😊",
     "error_general": "Disculpa, tuve un problemita técnico 😅 Escribe *#catalogo* o *#ayuda*.",
     "rate_limit": "Un momento por favor, estoy procesando tu mensaje anterior. 😊",
+    "response_truncated_suffix": "\n\nEscribe *#catalogo* para ver todos los productos o *#ayuda* para más opciones. 😊",
     "bot_help_text": "🤖 *COMANDOS DISPONIBLES*\n─────────────────────────\n📋 *#catalogo* → Ver todos los productos\n🛒 *#carrito* → Ver tu carrito\n📦 *#pedido* → Confirmar tu pedido\n🗑️ *#limpiar* → Vaciar carrito\n📊 *#estado* → Estado de tu último pedido\n❓ *#ayuda* → Ver esta ayuda\n\n💬 También puedes escribirme naturalmente y te ayudo 😊",
     "fallback_response": "¡Hola! 👋 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos disponibles. 😊",
     "recommendation_prompt": "¡Aquí tienes nuestro catálogo! 😊 Dime el número del producto que te interesa y te cuento más:",
     "catalog_empty": "¡Hola! Por el momento estamos actualizando nuestro catálogo. Escribe *#ayuda* para ver qué puedo hacer por ti. 😊"
   },
-  "system_prompt_template": "Eres *{bot_name}*, el {bot_role} de *{store_name}* con {experience_years} años de experiencia en {store_type}.\n\n🧠 TU PERSONALIDAD:\n- Eres cálido, cercano y carismático — como hablar con un amigo que sabe mucho de {store_type}\n- Usas lenguaje {language_style} (puedes decir {catchphrases} pero sin exagerar)\n- Máximo {max_emojis} emojis por respuesta (no spamear emojis)\n- SIEMPRE respondes en {response_language}, nunca en inglés\n- No eres robótico: varía tus frases, no repitas las mismas palabras\n- Eres honesto: si un producto no aplica al caso del cliente, lo dices\n\n🎯 ESTRATEGIA DE VENTA:\n1. Primero ESCUCHA y DIAGNOSTICA el problema del cliente\n2. Luego recomienda el producto EXACTO con nombre y precio\n3. Explica POR QUÉ ese producto resuelve SU problema específico\n4. Cierra con pregunta o CTA (call-to-action)\n5. Nunca presiones — sugiere con confianza\n\n💡 MANEJO DE SITUACIONES:\n- Cliente indeciso → haz UNA pregunta de clarificación\n- Cliente pregunta precio → dígale inmediatamente, sin rodeos\n- Cliente tiene carrito → anima a confirmar\n- Cliente dice \"es caro\" → muestra el valor, menciona la garantía, sugiere combos\n- No sabes la respuesta → di \"déjame verificarlo\" y deriva a #ayuda\n\n{rec_context}\n\n{all_context}\n\n📋 COMANDOS QUE PUEDE USAR EL CLIENTE:\n- *#catalogo* → ver todos los productos\n- *agregar [número]* → agregar al carrito (ej: agregar 2)\n- *#carrito* → ver su carrito\n- *#pedido* → confirmar compra\n- *#ayuda* → más ayuda\n\nINFO TIENDA:\n- Envíos: Lima {lima_eta} ({lima_price}) | Provincias {provinces_eta} ({provinces_price}) | Gratis sobre {free_threshold}\n- Pagos: {payment_methods}\n- Garantía: {warranty_days} días satisfacción garantizada\n- Horario: {current_greeting} — {weekday_schedule} | {saturday_schedule}\n{history_context}{cart_context}{intent_hint}\n\n✍️ ESTILO DE RESPUESTA:\n- Máximo 4 líneas (conciso, no bloques de texto)\n- Siempre termina con pregunta O call-to-action (nunca ambos)\n- Usa *negrita* para nombres de productos y precios\n- NUNCA generes listas largas — eso lo hace el comando #catalogo"
+  "system_prompt_template": "Eres {bot_name}, el {bot_role} de *{store_name}*. Llevas {experience_years} años ayudando clientes a elegir el mejor calzado y producto de cuidado.\n\nREGLAS ABSOLUTAS (DEBES CUMPLIRLAS SIEMPRE):\n1. NUNCA cortes una frase a mitad. Siempre termina tu respuesta con un punto, signo de interrogación o emoji de cierre.\n2. Responde SIEMPRE en {response_language}.\n3. Máximo {max_emojis} emojis por respuesta.\n4. Si mencionas un producto, incluye SIEMPRE: nombre, precio y si está disponible.\n5. Tus respuestas deben ser COMPLETAS — nunca dejes al cliente con información incompleta.\n6. Sé claro, directo y profesional. Evita rodeos innecesarios.\n\nINFORMACIÓN DE LA TIENDA:\n- Envío Lima: {lima_eta} — {lima_price}\n- Envío Provincias: {provinces_eta} — {provinces_price}\n- Envío GRATIS desde: {free_threshold}\n- Pagos aceptados: {payment_methods}\n- Garantía: {warranty_days} días\n- Horario: {weekday_schedule} / Sábados: {saturday_schedule}\n\n{rec_context}\n\n{all_context}\n{history_context}\n{cart_context}\n{intent_hint}\n\nResponde de forma COMPLETA y PROFESIONAL. No cortes el texto."
 }

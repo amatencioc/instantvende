@@ -287,27 +287,28 @@ def generate_catalog(products: List, profile: dict) -> str:
     if not products:
         return "😔 No tenemos productos disponibles en este momento. ¡Vuelve pronto!"
 
-    catalog_cfg = profile.get("catalog", {})
     store_name = get_field(profile, "store", "name", default="TIENDA")
-    desc_max = catalog_cfg.get("description_preview_chars", 60)
 
-    catalog = f"🛍️ *CATÁLOGO {store_name.upper()}*\n"
-    catalog += "─" * 30 + "\n\n"
+    catalog = f"📦 *CATÁLOGO DE PRODUCTOS*\n"
+    catalog += "─" * 26 + "\n"
 
     for i, p in enumerate(products, 1):
-        stock_emoji = "✅" if p.stock > 5 else ("⚠️" if p.stock > 0 else "❌")
-        desc = (p.description[:desc_max] + "...") if len(p.description) > desc_max else p.description
-        catalog += f"*{i}. {p.name}*\n"
-        catalog += f"   💰 S/ {p.price / 100:.2f}\n"
-        catalog += f"   {stock_emoji} Stock: {p.stock} unidades\n"
-        catalog += f"   📝 {desc}\n"
-        if p.image_url:
-            catalog += f"   🖼️ {p.image_url}\n"
-        catalog += "\n"
+        price_fmt = f"S/ {p.price / 100:.2f}"
+        if p.stock > 5:
+            stock_str = f"✅ Disponible ({p.stock} unidades)"
+        elif p.stock > 0:
+            stock_str = f"⚠️ Últimas {p.stock} unidades"
+        else:
+            stock_str = "❌ Agotado"
 
-    catalog += "─" * 30 + "\n"
-    catalog += "➕ Agregar producto: *agregar [número]*\n"
-    catalog += "🛒 Ver carrito: *#carrito*\n"
+        catalog += f"\n*{i}. {p.name}*\n"
+        catalog += f"💰 {price_fmt}\n"
+        catalog += f"📝 {p.description}\n"
+        catalog += f"{stock_str}\n"
+
+    catalog += "\n" + "─" * 26 + "\n"
+    catalog += "🛒 Para agregar: escribe *agregar 1*, *agregar 2*, etc.\n"
+    catalog += "📋 Ver carrito: *#carrito*\n"
     catalog += "📦 Confirmar pedido: *#pedido*"
     return catalog
 
@@ -811,8 +812,17 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
     all_products = products[:max_products_ctx]
 
     def fmt_product(p: Product) -> str:
-        stock_label = "✅ disponible" if p.stock > 5 else (f"⚠️ últimas {p.stock} unidades" if p.stock > 0 else "❌ agotado")
-        return f"  • *{p.name}* — S/ {p.price / 100:.2f} | {stock_label}\n    {p.description[:ai_desc_chars]}"
+        stock_label = (
+            "✅ disponible" if p.stock > 5
+            else (f"⚠️ últimas {p.stock} unidades" if p.stock > 0
+                  else "❌ agotado")
+        )
+        price_fmt = f"S/ {p.price / 100:.2f}"
+        desc = p.description[:ai_desc_chars] if len(p.description) > ai_desc_chars else p.description
+        return (
+            f"  • *{p.name}* — {price_fmt} | {stock_label}\n"
+            f"    Descripción: {desc}"
+        )
 
     if recommended:
         rec_context = "PRODUCTOS RECOMENDADOS para este cliente:\n" + "\n".join(fmt_product(p) for p in recommended)
@@ -926,15 +936,25 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
                 "Disculpa, tuve un problemita técnico 😅 Escribe *#catalogo* o *#ayuda*.",
             )
 
-        # Truncar respuesta excesivamente larga al último punto o salto de línea antes del límite
+        # Truncar respuesta excesivamente larga al último punto, interrogación o salto de línea
         if len(ai_message) > max_chars:
             truncated = ai_message[:max_chars]
-            # Buscar el último punto o salto de línea para corte limpio
-            last_break = max(truncated.rfind('.'), truncated.rfind('\n'))
-            if last_break > max_chars // 2:
+            # Buscar el último punto, signo de interrogación o exclamación para corte limpio
+            last_break = max(
+                truncated.rfind('.'),
+                truncated.rfind('?'),
+                truncated.rfind('!'),
+                truncated.rfind('\n')
+            )
+            if last_break > max_chars // 3:  # más permisivo — acepta cortes desde 1/3 del texto
                 ai_message = truncated[:last_break + 1].strip()
             else:
-                ai_message = truncated.rstrip() + "..."
+                # Si no hay punto limpio, añadir CTA de cierre
+                ai_response_ending = msgs_cfg.get(
+                    "response_truncated_suffix",
+                    "\n\nEscribe *#catalogo* para ver todos los productos o *#ayuda* para más opciones. 😊"
+                )
+                ai_message = truncated.rstrip() + ai_response_ending
 
         # Post-procesado según intent (evitar sufijos duplicados)
         if intent["type"] == "purchase" and "#catalogo" not in ai_message and "agregar" not in ai_message.lower():
