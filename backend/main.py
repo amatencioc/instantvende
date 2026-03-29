@@ -15,7 +15,7 @@ from datetime import datetime
 import ollama
 
 from config import settings
-from auth import verify_api_key
+from auth import verify_api_key, verify_api_key_optional
 from exceptions import (
     setup_exception_handlers,
     handle_db_errors,
@@ -545,7 +545,7 @@ class OrderStatusUpdate(BaseModel):
         return v
 
 @app.get("/api/products")
-def get_products(db: Session = Depends(get_db)):
+def get_products(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     return db.query(Product).all()
 
 @app.post("/api/products")
@@ -1300,7 +1300,7 @@ def root():
     }
 
 @app.get("/api/health/ollama")
-def check_ollama():
+def check_ollama(_: Optional[str] = Depends(verify_api_key_optional)):
     try:
         response = ollama.chat(
             model=settings.OLLAMA_MODEL,
