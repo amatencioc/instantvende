@@ -11,10 +11,9 @@ import Button from '../components/ui/Button.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 
-function maskPhone(phone) {
-  if (!phone) return '****'
-  const str = String(phone)
-  return '****' + str.slice(-4)
+function formatPhone(phone) {
+  if (!phone) return 'Sin número'
+  return String(phone)
 }
 
 function relativeDate(dateStr) {
@@ -48,12 +47,12 @@ export default function Conversations() {
     let list = conversations
     if (search) {
       list = list.filter((c) =>
-        String(c.phone_number).includes(search) ||
+        String(c.phone).includes(search) ||
         (c.customer_name && c.customer_name.toLowerCase().includes(search.toLowerCase()))
       )
     }
-    if (filter === 'bot_on') list = list.filter((c) => c.bot_active)
-    if (filter === 'bot_off') list = list.filter((c) => !c.bot_active)
+    if (filter === 'bot_on') list = list.filter((c) => c.bot_enabled)
+    if (filter === 'bot_off') list = list.filter((c) => !c.bot_enabled)
     return list
   }, [conversations, search, filter])
 
@@ -64,13 +63,13 @@ export default function Conversations() {
     e.stopPropagation()
     setToggling(conv.id)
     try {
-      await toggleBot(conv.id)
+      await toggleBot(conv.id, !conv.bot_enabled)
       setConversations((prev) =>
         prev.map((c) =>
-          c.id === conv.id ? { ...c, bot_active: !c.bot_active } : c
+          c.id === conv.id ? { ...c, bot_enabled: !c.bot_enabled } : c
         )
       )
-      toast.success(`Bot ${conv.bot_active ? 'desactivado' : 'activado'}`)
+      toast.success(`Bot ${conv.bot_enabled ? 'desactivado' : 'activado'}`)
     } catch {
       toast.error('Error al cambiar estado del bot')
     } finally {
@@ -156,14 +155,14 @@ export default function Conversations() {
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
                           <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold flex-shrink-0">
-                            {maskPhone(conv.phone_number).slice(-1)}
+                            {formatPhone(conv.phone).slice(-1)}
                           </div>
                           <div>
                             {conv.customer_name && (
                               <p className="text-slate-800 font-medium text-xs">{conv.customer_name}</p>
                             )}
                             <span className="text-slate-500 text-xs">
-                              {maskPhone(conv.phone_number)}
+                              {formatPhone(conv.phone)}
                             </span>
                           </div>
                         </div>
@@ -173,18 +172,18 @@ export default function Conversations() {
                           onClick={(e) => handleToggle(e, conv)}
                           disabled={toggling === conv.id}
                           className="flex items-center gap-2 transition-opacity disabled:opacity-50"
-                          title={conv.bot_active ? 'Desactivar bot' : 'Activar bot'}
+                          title={conv.bot_enabled ? 'Desactivar bot' : 'Activar bot'}
                         >
                           {/* Toggle switch */}
                           <div className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${
-                            conv.bot_active ? 'bg-emerald-500' : 'bg-slate-300'
+                            conv.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'
                           }`}>
                             <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
-                              conv.bot_active ? 'translate-x-4' : 'translate-x-0'
+                              conv.bot_enabled ? 'translate-x-4' : 'translate-x-0'
                             }`} />
                           </div>
-                          <Badge variant={conv.bot_active ? 'green' : 'gray'}>
-                            {toggling === conv.id ? '...' : conv.bot_active ? 'Activo' : 'Inactivo'}
+                          <Badge variant={conv.bot_enabled ? 'green' : 'gray'}>
+                            {toggling === conv.id ? '...' : conv.bot_enabled ? 'Activo' : 'Inactivo'}
                           </Badge>
                         </button>
                       </td>

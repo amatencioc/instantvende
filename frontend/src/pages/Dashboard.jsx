@@ -28,10 +28,9 @@ const STATUS_LABELS = {
   cancelled: 'Cancelado',
 }
 
-function maskPhone(phone) {
-  if (!phone) return '****'
-  const str = String(phone)
-  return '****' + str.slice(-4)
+function formatPhone(phone) {
+  if (!phone) return 'Sin número'
+  return String(phone)
 }
 
 function getGreeting() {
@@ -207,11 +206,11 @@ export default function Dashboard() {
                 className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
               >
                 <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm flex-shrink-0">
-                  {maskPhone(conv.phone_number).slice(-1)}
+                  {formatPhone(conv.phone).slice(-1)}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-slate-800 text-sm font-medium">
-                    {conv.customer_name || maskPhone(conv.phone_number)}
+                    {conv.customer_name || formatPhone(conv.phone)}
                   </p>
                   <p className="text-slate-400 text-xs truncate">
                     {conv.last_message || 'Sin mensajes'}

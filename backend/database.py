@@ -10,8 +10,9 @@ engine = create_engine(
         "check_same_thread": False,
         "timeout": 30,            # esperar hasta 30s si la DB está bloqueada
     },
-    pool_size=1,                  # SQLite solo soporta 1 escritor a la vez
-    max_overflow=0,               # no crear conexiones extra
+    pool_size=3,                  # WAL mode permite lecturas concurrentes
+    max_overflow=5,               # conexiones extra bajo carga pico
+    pool_timeout=30,              # tiempo de espera para obtener conexión del pool
     pool_pre_ping=True,           # verificar conexión antes de usarla
 )
 

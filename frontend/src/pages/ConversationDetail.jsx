@@ -8,10 +8,9 @@ import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
 
-function maskPhone(phone) {
-  if (!phone) return '****'
-  const str = String(phone)
-  return '****' + str.slice(-4)
+function formatPhone(phone) {
+  if (!phone) return 'Sin número'
+  return String(phone)
 }
 
 export default function ConversationDetail() {
@@ -50,9 +49,9 @@ export default function ConversationDetail() {
     if (!conv) return
     setToggling(true)
     try {
-      await toggleBot(conv.id)
-      setConv((c) => ({ ...c, bot_active: !c.bot_active }))
-      toast.success(`Bot ${conv.bot_active ? 'desactivado' : 'activado'}`)
+      await toggleBot(conv.id, !conv.bot_enabled)
+      setConv((c) => ({ ...c, bot_enabled: !c.bot_enabled }))
+      toast.success(`Bot ${conv.bot_enabled ? 'desactivado' : 'activado'}`)
     } catch {
       toast.error('Error al cambiar el estado del bot')
     } finally {
@@ -71,7 +70,7 @@ export default function ConversationDetail() {
     )
   }
 
-  const clientLabel = conv?.customer_name || maskPhone(conv?.phone_number)
+  const clientLabel = conv?.customer_name || formatPhone(conv?.phone)
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
@@ -89,7 +88,7 @@ export default function ConversationDetail() {
             <div>
               <p className="text-slate-800 font-semibold text-lg">{clientLabel}</p>
               {conv?.customer_name && (
-                <p className="text-slate-400 text-xs">{maskPhone(conv?.phone_number)}</p>
+                <p className="text-slate-400 text-xs">{formatPhone(conv?.phone)}</p>
               )}
               <p className="text-slate-400 text-xs">Cliente</p>
             </div>
@@ -98,8 +97,8 @@ export default function ConversationDetail() {
           <div className="border-t border-slate-200 pt-4 flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <span className="text-slate-500 text-sm">Estado del bot</span>
-              <Badge variant={conv?.bot_active ? 'green' : 'gray'}>
-                {conv?.bot_active ? 'Activo' : 'Inactivo'}
+              <Badge variant={conv?.bot_enabled ? 'green' : 'gray'}>
+                {conv?.bot_enabled ? 'Activo' : 'Inactivo'}
               </Badge>
             </div>
             <div className="flex items-center justify-between">
@@ -117,12 +116,12 @@ export default function ConversationDetail() {
           </div>
 
           <Button
-            variant={conv?.bot_active ? 'danger' : 'primary'}
+            variant={conv?.bot_enabled ? 'danger' : 'primary'}
             onClick={handleToggle}
             loading={toggling}
             className="w-full"
           >
-            {conv?.bot_active ? (
+            {conv?.bot_enabled ? (
               <><BotOff size={16} /> Desactivar bot</>
             ) : (
               <><Bot size={16} /> Activar bot</>
@@ -137,11 +136,11 @@ export default function ConversationDetail() {
         <div className="p-4 border-b border-slate-200">
           <div className="flex items-center justify-between">
             <p className="text-slate-800 font-medium text-sm">{clientLabel}</p>
-            <Badge variant={conv?.bot_active ? 'green' : 'gray'}>
-              {conv?.bot_active ? 'Bot activo' : 'Bot inactivo'}
+            <Badge variant={conv?.bot_enabled ? 'green' : 'gray'}>
+              {conv?.bot_enabled ? 'Bot activo' : 'Bot inactivo'}
             </Badge>
           </div>
-          {conv && !conv.bot_active && (
+          {conv && !conv.bot_enabled && (
             <div className="mt-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs flex items-center gap-2">
               <BotOff size={14} />
               Bot desactivado — respondiendo manualmente
