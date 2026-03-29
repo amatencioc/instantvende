@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 import random
 import time
+import concurrent.futures
 from pydantic import BaseModel, ConfigDict
 import ollama
 
@@ -109,8 +110,20 @@ FAQ_KEYWORDS = {
 
 # ===== COMANDOS DEL BOT =====
 BOT_COMMANDS = {
-    "catalog":    ["#catalogo", "#catálogo", "ver productos", "que productos tienen",
-                   "qué productos tienen", "lista de productos", "que tienen", "qué tienen", "mostrar productos"],
+    "catalog":    [
+        "#catalogo", "#catálogo",
+        "ver productos", "mostrar productos", "lista de productos",
+        "que productos tienen", "qué productos tienen",
+        "que tienen", "qué tienen",
+        "que vendes", "qué vendes",
+        "que venden", "qué venden",
+        "que productos", "qué productos",
+        "que hay", "qué hay",
+        "que tienes", "qué tienes",
+        "que productos hay", "qué productos hay",
+        "ver catalogo", "ver catálogo",
+        "mostrar catalogo", "mostrar catálogo",
+    ],
     "cart":       ["#carrito", "mi carrito", "ver carrito", "ver mi carrito"],
     "order":      ["#pedido", "hacer pedido", "confirmar pedido", "quiero pedir", "confirmar compra"],
     "clear_cart": ["#limpiar", "limpiar carrito", "vaciar carrito", "borrar carrito"],
@@ -134,7 +147,7 @@ def detect_command(message: str) -> Optional[str]:
     """Detecta si el mensaje es un comando específico del bot"""
     message_lower = message.lower().strip()
     for command, triggers in BOT_COMMANDS.items():
-        if any(message_lower == trigger or message_lower.startswith(trigger) for trigger in triggers):
+        if any(message_lower == trigger or message_lower.startswith(trigger) or trigger in message_lower for trigger in triggers):
             return command
     if re.match(r'^(agregar|añadir|quiero el|dame el|producto)\s+\d+', message_lower):
         return "add_to_cart"
@@ -552,27 +565,41 @@ EJEMPLOS DE BUENAS RESPUESTAS:
 
     try:
         start_time = time.time()
-        
         print(f"🤖 Generando respuesta con IA (intención: {intent['type']})...")
-        
-        response = ollama.chat(
-            model='phi3:mini',
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': message}
-            ],
-            options={
-                'temperature': 0.8,
-                'num_predict': 100,
-                'num_ctx': 2048,
-                'top_p': 0.9,
-                'repeat_penalty': 1.2,
-            }
-        )
-        
+
+        ollama_messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': message}
+        ]
+        ollama_options = {
+            'temperature': 0.8,
+            'num_predict': 80,
+            'num_ctx': 1024,
+            'top_p': 0.9,
+            'repeat_penalty': 1.2,
+            'num_thread': 4,
+        }
+
+        # Llamada con timeout de 45 segundos para no bloquear al cliente
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                ollama.chat,
+                model='phi3:mini',
+                messages=ollama_messages,
+                options=ollama_options
+            )
+            try:
+                response = future.result(timeout=45)
+            except concurrent.futures.TimeoutError:
+                print("⏰ Ollama timeout — devolviendo respuesta rápida")
+                return (
+                    "Disculpa la demora 🙏 Escribe *#catalogo* para ver todos nuestros productos "
+                    "o cuéntame más sobre lo que necesitas y te ayudo de inmediato."
+                )
+
         elapsed = time.time() - start_time
         ai_message = response['message']['content'].strip()
-        
+
         # Post-procesado según intent
         if intent["type"] == "purchase" and "#catalogo" not in ai_message and "agregar" not in ai_message.lower():
             if "?" not in ai_message:
@@ -582,10 +609,13 @@ EJEMPLOS DE BUENAS RESPUESTAS:
 
         print(f"✅ Respuesta generada en {elapsed:.1f}s | Intent: {intent['type']}")
         return ai_message
-    
+
     except Exception as e:
         print(f"❌ Error generando respuesta: {e}")
-        return "Disculpa, tuve un problemita técnico 😅 ¿Podrías repetir tu pregunta?"
+        return (
+            "Disculpa, tuve un problemita técnico 😅 "
+            "Escribe *#catalogo* para ver nuestros productos o *#ayuda* para ver los comandos disponibles."
+        )
 
 @app.post("/api/process-message")
 def process_message(request: MessageRequest, db: Session = Depends(get_db)):
