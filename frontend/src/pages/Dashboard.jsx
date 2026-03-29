@@ -8,6 +8,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from 'recharts'
 import { getAnalytics } from '../api/analytics.js'
+import { getConversations } from '../api/conversations.js'
 import StatCard from '../components/ui/StatCard.jsx'
 import Card from '../components/ui/Card.jsx'
 import { SkeletonCard } from '../components/ui/Skeleton.jsx'
@@ -28,10 +29,9 @@ const STATUS_LABELS = {
   cancelled: 'Cancelado',
 }
 
-function maskPhone(phone) {
-  if (!phone) return '****'
-  const str = String(phone)
-  return '****' + str.slice(-4)
+function formatPhone(phone) {
+  if (!phone) return '—'
+  return String(phone)
 }
 
 function getGreeting() {
@@ -43,12 +43,20 @@ function getGreeting() {
 
 export default function Dashboard() {
   const [data, setData] = useState(null)
+  const [recentConvs, setRecentConvs] = useState([])
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
 
   useEffect(() => {
-    getAnalytics()
-      .then((r) => setData(r.data))
+    Promise.all([
+      getAnalytics(),
+      getConversations(),
+    ])
+      .then(([analyticsRes, convsRes]) => {
+        setData(analyticsRes.data)
+        const convs = Array.isArray(convsRes.data) ? convsRes.data : []
+        setRecentConvs(convs.slice(0, 5))
+      })
       .catch(console.error)
       .finally(() => setLoading(false))
   }, [])
@@ -66,17 +74,16 @@ export default function Dashboard() {
     )
   }
 
-  const ordersByStatus = data?.orders_by_status || {}
+  const ordersByStatus = data?.orders?.by_status || {}
   const pieData = Object.entries(ordersByStatus).map(([key, val]) => ({
     name: STATUS_LABELS[key] || key,
     value: val,
     color: STATUS_COLORS[key] || '#94a3b8',
   }))
 
-  const topProducts = data?.top_products || []
-  const recentConvs = data?.recent_conversations || []
+  const topProducts = data?.products?.top_sellers || []
 
-  const confirmedRevenue = (data?.revenue_confirmed || 0) / 100
+  const totalRevenue = data?.revenue?.total_soles || 0
 
   return (
     <div className="flex flex-col gap-6">
@@ -93,26 +100,26 @@ export default function Dashboard() {
         <StatCard
           icon={MessageSquare}
           label="Total Conversaciones"
-          value={data?.total_conversations ?? 0}
+          value={data?.conversations?.total ?? 0}
           color="indigo"
         />
         <StatCard
           icon={ShoppingCart}
           label="Pedidos Totales"
-          value={data?.total_orders ?? 0}
+          value={data?.orders?.total ?? 0}
           color="cyan"
         />
         <StatCard
           icon={TrendingUp}
           label="Ingresos Confirmados"
-          value={`S/ ${confirmedRevenue.toFixed(2)}`}
+          value={`S/ ${totalRevenue.toFixed(2)}`}
           sub="Confirmados + enviados + entregados"
           color="green"
         />
         <StatCard
           icon={Package}
           label="Productos en Stock"
-          value={data?.products_in_stock ?? 0}
+          value={data?.products?.in_stock ?? 0}
           color="yellow"
         />
       </div>
@@ -207,11 +214,11 @@ export default function Dashboard() {
                 className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
               >
                 <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm flex-shrink-0">
-                  {maskPhone(conv.phone_number).slice(-1)}
+                  {((conv.customer_name || formatPhone(conv.phone)) || '?').slice(0, 1).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-slate-800 text-sm font-medium">
-                    {conv.customer_name || maskPhone(conv.phone_number)}
+                    {conv.customer_name || formatPhone(conv.phone)}
                   </p>
                   <p className="text-slate-400 text-xs truncate">
                     {conv.last_message || 'Sin mensajes'}
