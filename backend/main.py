@@ -1,15 +1,12 @@
 import os
 import re
-import secrets
 import random
 import time
 import threading
 import concurrent.futures
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security.api_key import APIKeyHeader
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -17,38 +14,37 @@ from typing import List, Optional, Dict
 from datetime import datetime
 import ollama
 
+from config import settings
+from auth import verify_api_key
+from exceptions import (
+    setup_exception_handlers,
+    handle_db_errors,
+    ProductNotFoundException,
+    ProductDuplicateException,
+    InsufficientStockException,
+    OrderNotFoundException,
+    ConversationNotFoundException,
+)
+from logger import setup_logger, log_with_context
+from backup import BackupManager, start_backup_scheduler
 from database import (
     SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem,
-    backup_database, cleanup_old_backups,
 )
 
-# ===== CONFIGURACIÓN (carga variables desde .env) =====
-load_dotenv()
-
-_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-
-def verify_api_key(api_key: str = Security(_API_KEY_HEADER)) -> str:
-    """Valida la clave de API enviada en el encabezado X-API-Key."""
-    expected = os.getenv("API_KEY", "")
-    if not expected:
-        raise HTTPException(status_code=500, detail="API_KEY no está configurada en el servidor")
-    # secrets.compare_digest evita ataques de temporización
-    if not api_key or not secrets.compare_digest(api_key, expected):
-        raise HTTPException(status_code=401, detail="API key inválida o ausente")
-    return api_key
+# ===== LOGGING =====
+logger = setup_logger()
 
 # ===== PRE-CARGAR MODELO AL INICIAR =====
-print("⏳ Pre-cargando modelo Ollama...")
+logger.info("⏳ Pre-cargando modelo Ollama...")
 try:
     ollama.chat(
-        model='phi3:mini',
+        model=settings.OLLAMA_MODEL,
         messages=[{'role': 'user', 'content': 'test'}],
         options={'num_predict': 1}
     )
-    print("✅ Modelo cargado en memoria\n")
+    logger.info("✅ Modelo cargado en memoria")
 except Exception as e:
-    print(f"⚠️  Advertencia: No se pudo pre-cargar modelo: {e}\n")
+    logger.warning("⚠️  No se pudo pre-cargar modelo Ollama", extra={"error": str(e)})
 
 # ===== RESPUESTAS FRECUENTES (FAQ) =====
 FAQ_RESPONSES = {
@@ -387,37 +383,33 @@ def get_product_recommendations(message: str, products: List) -> List:
 
 def _backup_loop() -> None:
     """Hilo daemon que realiza backups periódicos de la base de datos SQLite."""
-    interval_hours = int(os.getenv("BACKUP_INTERVAL_HOURS", "6"))
-    max_backups = int(os.getenv("MAX_BACKUPS", "10"))
-    while True:
-        time.sleep(interval_hours * 3600)
-        try:
-            path = backup_database()
-            cleanup_old_backups(max_backups)
-            print(f"✅ Backup automático creado: {path}")
-        except Exception as exc:
-            print(f"❌ Error en backup automático: {exc}")
+    start_backup_scheduler(
+        interval_hours=settings.BACKUP_INTERVAL_HOURS,
+        max_backups=settings.MAX_BACKUPS,
+    )
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Backup inicial al arrancar el servidor
+    _mgr = BackupManager(max_backups=settings.MAX_BACKUPS)
     try:
-        path = backup_database()
-        cleanup_old_backups(int(os.getenv("MAX_BACKUPS", "10")))
-        print(f"✅ Backup inicial creado: {path}")
+        path = _mgr.create_backup()
+        _mgr.cleanup_old_backups()
+        log_with_context(logger, "info", "Backup inicial creado", path=path)
     except Exception as exc:
-        print(f"⚠️  Backup inicial falló: {exc}")
+        log_with_context(logger, "warning", "Backup inicial falló", error=str(exc))
     # Hilo daemon de backup periódico (se cierra automáticamente con el proceso)
     threading.Thread(target=_backup_loop, daemon=True).start()
     yield
 
 
 app = FastAPI(title="InstantVende API", version="1.0.0-mvp", lifespan=lifespan)
+setup_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -558,11 +550,16 @@ def get_products(db: Session = Depends(get_db)):
 
 @app.post("/api/products")
 def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    db_product = Product(**product.dict())
-    db.add(db_product)
-    db.commit()
-    db.refresh(db_product)
-    return db_product
+    with handle_db_errors():
+        existing = db.query(Product).filter(Product.name == product.name).first()
+        if existing:
+            raise ProductDuplicateException(f"Ya existe un producto con el nombre '{product.name}'")
+        db_product = Product(**product.dict())
+        db.add(db_product)
+        db.commit()
+        db.refresh(db_product)
+        log_with_context(logger, "info", "Producto creado", product_name=product.name, product_id=db_product.id)
+        return db_product
 
 def generate_ai_response(message: str, products: List[Product], conversation_history: List[str] = None, recently_viewed: List[str] = None) -> str:
     """
@@ -574,7 +571,7 @@ def generate_ai_response(message: str, products: List[Product], conversation_his
     
     # Si es una pregunta FAQ, responder directamente (más rápido)
     if intent["type"] == "faq" and intent["faq_topic"]:
-        print(f"💡 FAQ detectada: {intent['faq_topic']}")
+        log_with_context(logger, "info", "FAQ detectada", topic=intent["faq_topic"])
         return FAQ_RESPONSES[intent["faq_topic"]]
     
     # Si es saludo
@@ -713,7 +710,7 @@ EJEMPLOS DE BUENAS RESPUESTAS:
 
     try:
         start_time = time.time()
-        print(f"🤖 Generando respuesta con IA (intención: {intent['type']})...")
+        log_with_context(logger, "info", "Generando respuesta con IA", intent=intent['type'])
 
         ollama_messages = [
             {'role': 'system', 'content': system_prompt},
@@ -732,14 +729,14 @@ EJEMPLOS DE BUENAS RESPUESTAS:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 ollama.chat,
-                model='phi3:mini',
+                model=settings.OLLAMA_MODEL,
                 messages=ollama_messages,
                 options=ollama_options
             )
             try:
-                response = future.result(timeout=45)
+                response = future.result(timeout=settings.OLLAMA_TIMEOUT)
             except concurrent.futures.TimeoutError:
-                print("⏰ Ollama timeout — devolviendo respuesta rápida")
+                log_with_context(logger, "warning", "Ollama timeout", timeout=settings.OLLAMA_TIMEOUT)
                 return (
                     "Disculpa la demora 🙏 Escribe *#catalogo* para ver todos nuestros productos "
                     "o cuéntame más sobre lo que necesitas y te ayudo de inmediato."
@@ -755,11 +752,11 @@ EJEMPLOS DE BUENAS RESPUESTAS:
         elif intent["type"] == "recommendation" and "agregar" not in ai_message.lower() and "#catalogo" not in ai_message:
             ai_message += " Escribe *#catalogo* para verlo. 😊"
 
-        print(f"✅ Respuesta generada en {elapsed:.1f}s | Intent: {intent['type']}")
+        log_with_context(logger, "info", "Respuesta IA generada", elapsed=round(elapsed, 2), intent=intent['type'])
         return ai_message
 
     except Exception as e:
-        print(f"❌ Error generando respuesta: {e}")
+        log_with_context(logger, "error", "Error generando respuesta IA", error=str(e))
         return (
             "Disculpa, tuve un problemita técnico 😅 "
             "Escribe *#catalogo* para ver nuestros productos o *#ayuda* para ver los comandos disponibles."
@@ -769,11 +766,7 @@ EJEMPLOS DE BUENAS RESPUESTAS:
 def process_message(request: MessageRequest, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
     """Procesar mensaje con IA, comandos y manejo de carrito/pedidos"""
 
-    print(f"\n{'='*70}")
-    print(f"📨 NUEVO MENSAJE")
-    print(f"{'='*70}")
-    print(f"De: {request.phone}")
-    print(f"Mensaje: {request.message}")
+    log_with_context(logger, "info", "Nuevo mensaje recibido", phone=request.phone[-4:], message=request.message[:100])
 
     # 1. Buscar o crear conversación
     conversation = db.query(Conversation).filter(
@@ -785,9 +778,9 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
-        print(f"✅ Nueva conversación creada (ID: {conversation.id})")
+        log_with_context(logger, "info", "Nueva conversación creada", conversation_id=conversation.id)
     else:
-        print(f"📂 Conversación existente (ID: {conversation.id})")
+        log_with_context(logger, "info", "Conversación existente", conversation_id=conversation.id)
 
     # 2. Guardar mensaje del cliente
     customer_msg = Message(
@@ -800,8 +793,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
 
     # 3. Verificar si bot está activo
     if not conversation.bot_enabled:
-        print(f"🚫 Bot desactivado para esta conversación")
-        print(f"{'='*70}\n")
+        log_with_context(logger, "info", "Bot desactivado para conversación", conversation_id=conversation.id)
         return {
             "reply": None,
             "bot_enabled": False,
@@ -816,7 +808,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     if command == "catalog":
         products = db.query(Product).filter(Product.stock > 0).all()
         ai_response = generate_catalog(products)
-        print(f"📋 Comando: catálogo ({len(products)} productos)")
+        log_with_context(logger, "info", "Comando: catálogo", product_count=len(products))
 
     elif command == "cart":
         cart_items = db.query(CartItem).filter(
@@ -826,7 +818,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         products_list = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
         products_dict = {p.id: p for p in products_list}
         ai_response = generate_cart_display(cart_items, products_dict)
-        print(f"🛒 Comando: ver carrito ({len(cart_items)} items)")
+        log_with_context(logger, "info", "Comando: ver carrito", item_count=len(cart_items))
 
     elif command == "order":
         cart_items = db.query(CartItem).filter(
@@ -898,7 +890,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                     f"💳 Pagos: Yape, Plin, transferencia\n\n"
                     f"¡Gracias por tu compra! 🙌"
                 )
-                print(f"📦 Pedido #{order.id} creado — Total: S/ {total / 100:.2f}")
+                log_with_context(logger, "info", "Pedido creado", order_id=order.id, total=total)
 
     elif command == "clear_cart":
         deleted = db.query(CartItem).filter(
@@ -906,11 +898,11 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         ).delete()
         db.commit()
         ai_response = f"🗑️ Carrito vaciado ({deleted} item(s) eliminados).\n\nEscribe *#catalogo* para empezar de nuevo."
-        print(f"🗑️ Comando: limpiar carrito")
+        log_with_context(logger, "info", "Comando: limpiar carrito", deleted=deleted)
 
     elif command == "help":
         ai_response = BOT_HELP_TEXT
-        print(f"❓ Comando: ayuda")
+        log_with_context(logger, "info", "Comando: ayuda")
 
     elif command == "status":
         last_order = db.query(Order).filter(
@@ -937,7 +929,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                 f"📅 Fecha: {last_order.created_at.strftime('%d/%m/%Y %H:%M')}\n\n"
                 f"¿Necesitas algo más? 😊"
             )
-        print(f"📊 Comando: estado de pedido")
+        log_with_context(logger, "info", "Comando: estado de pedido")
 
     elif command == "add_to_cart":
         match = re.search(r'\d+', request.message)
@@ -976,7 +968,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                         f"📦 Confirmar pedido: *#pedido*\n"
                         f"📋 Seguir comprando: *#catalogo*"
                     )
-                    print(f"🛒 Producto #{product_num} ({product.name}) agregado al carrito")
+                    log_with_context(logger, "info", "Producto agregado al carrito", product_num=product_num, product_name=product.name)
             else:
                 ai_response = f"⚠️ Número inválido. Escribe *#catalogo* para ver los productos disponibles (1 al {len(products)})."
         else:
@@ -999,7 +991,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         recently_viewed = [str(item.product_id) for item in cart_items]
 
         products = db.query(Product).filter(Product.stock > 0).all()
-        print(f"📦 Productos en stock: {len(products)}")
+        log_with_context(logger, "info", "Procesando con IA", product_count=len(products))
 
         ai_response = generate_ai_response(
             message=request.message,
@@ -1019,8 +1011,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
     conversation.last_message_at = datetime.utcnow()
     db.commit()
 
-    print(f"✅ Respuesta enviada: {ai_response[:60]}...")
-    print(f"{'='*70}\n")
+    log_with_context(logger, "info", "Respuesta enviada", preview=ai_response[:60])
 
     return {
         "reply": ai_response,
@@ -1066,7 +1057,7 @@ def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db
     db.commit()
     
     action = "activado" if enabled else "desactivado"
-    print(f"🔄 Bot {action} para conversación {conversation_id}")
+    log_with_context(logger, "info", f"Bot {action}", conversation_id=conversation_id)
     
     return {
         "bot_enabled": conversation.bot_enabled,
@@ -1312,7 +1303,7 @@ def root():
 def check_ollama():
     try:
         response = ollama.chat(
-            model='phi3:mini',
+            model=settings.OLLAMA_MODEL,
             messages=[{'role': 'user', 'content': 'Hola'}]
         )
         return {"status": "ok", "response": response['message']['content']}
@@ -1321,11 +1312,5 @@ def check_ollama():
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n" + "="*60)
-    print("🚀 InstantVende Backend - MVP")
-    print("="*60)
-    print("📍 Servidor:   http://localhost:8000")
-    print("📖 Docs:       http://localhost:8000/docs")
-    print("🤖 IA:         Ollama (phi3:mini)")
-    print("="*60 + "\n")
+    logger.info("🚀 InstantVende Backend iniciando", host="0.0.0.0", port=8000)
     uvicorn.run(app, host="0.0.0.0", port=8000)

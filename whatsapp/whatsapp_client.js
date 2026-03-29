@@ -1,13 +1,22 @@
+require('dotenv').config();
+
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 
-const BACKEND_URL = 'http://localhost:8000';
-const BUSINESS_NAME = 'InstantVende';
-const AI_TIMEOUT_MS = 90000;      // 90s límite para la IA
-const TYPING_DELAY_MS = 3000;     // Mostrar "escribiendo" después de 3s sin respuesta
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+const BACKEND_API_KEY = process.env.BACKEND_API_KEY || '';
+const BUSINESS_NAME = process.env.BUSINESS_NAME || 'InstantVende';
+const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
+const TYPING_DELAY_MS = parseInt(process.env.TYPING_DELAY_MS || '3000', 10);
 
-console.log('═══════════════════════════════��═══════════════════════');
+if (!BACKEND_API_KEY) {
+    console.error('❌ BACKEND_API_KEY no está configurada en .env');
+    console.error('   Copia whatsapp/.env.example a whatsapp/.env y configura la clave');
+    process.exit(1);
+}
+
+console.log('═══════════════════════════════════════════════════════');
 console.log(`📱 ${BUSINESS_NAME} - Cliente WhatsApp`);
 console.log('═══════════════════════════════════════════════════════\n');
 
@@ -104,7 +113,8 @@ client.on('message', async (message) => {
             phone: message.from,
             message: message.body
         }, {
-            timeout: AI_TIMEOUT_MS
+            timeout: AI_TIMEOUT_MS,
+            headers: { 'X-API-Key': BACKEND_API_KEY }
         });
 
         clearInterval(typingInterval);
@@ -148,6 +158,8 @@ client.on('message', async (message) => {
         } else if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
             console.error('   Timeout — la IA tardó más de', AI_TIMEOUT_MS / 1000, 'segundos');
             userMsg = 'Disculpa la demora 🙏 Escribe *#catalogo* para ver nuestros productos o *#ayuda* para los comandos disponibles.';
+        } else if (error.response?.status === 401) {
+            console.error('   Error de autenticación (401) — verifica BACKEND_API_KEY en .env');
         } else if (error.response) {
             console.error('   Status:', error.response.status);
             console.error('   Error:', JSON.stringify(error.response.data));
