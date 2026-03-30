@@ -123,4 +123,16 @@ class BotProfile(Base):
     updated_by = Column(String, nullable=True)    # quién hizo el último cambio
 
 
+class Vendor(Base):
+    """Vendedor registrado en el sistema."""
+    __tablename__ = "vendors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, unique=True, index=True)
+    business_name = Column(String, nullable=True)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 Base.metadata.create_all(bind=engine)

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import useAppStore from '../../store/useAppStore.js'
 import useAuthStore from '../../store/useAuthStore.js'
+import useVendorStore from '../../store/useVendorStore.js'
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
@@ -24,10 +25,12 @@ const navItems = [
 export default function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useAppStore()
   const logout = useAuthStore((s) => s.logout)
+  const { vendor, clearVendor } = useVendorStore()
   const navigate = useNavigate()
 
   const handleLogout = () => {
     logout()
+    clearVendor()
     navigate('/login')
   }
 
@@ -52,8 +55,18 @@ export default function Sidebar() {
         transition={{ duration: 0.3, ease: 'easeInOut' }}
         className="fixed left-0 top-0 h-full z-30 flex flex-col overflow-hidden bg-white border-r border-slate-200"
       >
+        {/* Toggle button — posición absoluta para que nunca quede oculto por overflow-hidden */}
+        <motion.button
+          onClick={toggleSidebar}
+          className="absolute top-4 right-3 z-10 p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0"
+          animate={{ rotate: sidebarOpen ? 0 : 180 }}
+          transition={{ duration: 0.3 }}
+        >
+          <ChevronLeft size={16} />
+        </motion.button>
+
         {/* Header */}
-        <div className="flex items-center gap-3 p-4 h-16 border-b border-slate-200">
+        <div className="flex items-center gap-3 px-4 h-16 border-b border-slate-200">
           <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0">
             <Zap size={16} className="text-white" />
           </div>
@@ -69,14 +82,6 @@ export default function Sidebar() {
               </motion.span>
             )}
           </AnimatePresence>
-          <motion.button
-            onClick={toggleSidebar}
-            className="ml-auto p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0"
-            animate={{ rotate: sidebarOpen ? 0 : 180 }}
-            transition={{ duration: 0.3 }}
-          >
-            <ChevronLeft size={16} />
-          </motion.button>
         </div>
 
         {/* Navigation */}
@@ -122,6 +127,18 @@ export default function Sidebar() {
 
         {/* Footer */}
         <div className="p-2 border-t border-slate-200">
+          {/* Vendor info */}
+          {vendor && sidebarOpen && (
+            <div className="flex items-center gap-2 px-3 py-2 mb-1">
+              <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold flex-shrink-0">
+                {vendor.name?.[0]?.toUpperCase() || 'V'}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-slate-700 truncate">{vendor.name}</p>
+                <p className="text-xs text-slate-400 truncate">{vendor.email}</p>
+              </div>
+            </div>
+          )}
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-500 hover:text-red-500 hover:bg-red-50 transition-all duration-200"

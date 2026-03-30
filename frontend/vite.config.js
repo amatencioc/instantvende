@@ -13,8 +13,14 @@ export default defineConfig({
     }
   },
   preview: {
-    port: 3000,
-    // Bind to all network interfaces to allow access from other devices on the network
+    port: 4173,
     host: true,
+    allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      }
+    }
   }
 })

@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import re
+import urllib.request
+import urllib.error
 import random
 import time
 import threading
@@ -18,6 +20,7 @@ from typing import Generator, List, Optional, Dict
 from datetime import datetime, timezone
 import ollama
 
+import bcrypt
 from config import settings
 from auth import verify_api_key, verify_api_key_optional
 from exceptions import (
@@ -33,7 +36,7 @@ from exceptions import (
 from logger import setup_logger, log_with_context
 from backup import BackupManager, start_backup_scheduler
 from database import (
-    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem, BotProfile,
+    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem, BotProfile, Vendor,
 )
 from bot_profile_loader import get_profile, invalidate_cache, get_field, load_default_profile
 
@@ -571,17 +574,20 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def get_or_create_conversation(db: Session, phone: str) -> "Conversation":
+def get_or_create_conversation(db: Session, phone: str, customer_name: Optional[str] = None) -> "Conversation":
     """Obtiene o crea una conversación de forma thread-safe."""
     conversation = db.query(Conversation).filter(
         Conversation.phone == phone
     ).first()
 
     if conversation:
+        if customer_name and not conversation.customer_name:
+            conversation.customer_name = customer_name
+            db.commit()
         return conversation
 
     try:
-        conversation = Conversation(phone=phone)
+        conversation = Conversation(phone=phone, customer_name=customer_name)
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -654,6 +660,7 @@ class MessageRequest(BaseModel):
 
     phone: str
     message: str
+    customer_name: Optional[str] = None
 
     @field_validator("phone")
     @classmethod
@@ -767,7 +774,6 @@ def update_product(
         for field, value in product.model_dump().items():
             setattr(db_product, field, value)
 
-        db_product.version += 1
         db.commit()
         db.refresh(db_product)
         log_with_context(logger, "info", "Producto actualizado", product_id=product_id)
@@ -1047,7 +1053,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
             raise RateLimitException(msgs_cfg.get("rate_limit", "Un momento, estoy procesando tu mensaje anterior 🙏"))
 
         # 1. Buscar o crear conversación (thread-safe)
-        conversation = get_or_create_conversation(db, request.phone)
+        conversation = get_or_create_conversation(db, request.phone, request.customer_name)
         log_with_context(logger, "info", "Conversación activa", conversation_id=conversation.id)
 
         # 2. Guardar mensaje del cliente
@@ -1425,7 +1431,35 @@ def get_conversations(db: Session = Depends(get_db), _: str = Depends(verify_api
     conversations = db.query(Conversation).order_by(
         Conversation.last_message_at.desc()
     ).all()
-    return conversations
+
+    if not conversations:
+        return []
+
+    conv_ids = [c.id for c in conversations]
+    subq = (
+        db.query(Message.conversation_id, func.max(Message.id).label("max_id"))
+        .filter(Message.conversation_id.in_(conv_ids))
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+    last_messages = (
+        db.query(Message)
+        .join(subq, Message.id == subq.c.max_id)
+        .all()
+    )
+    last_msg_map = {m.conversation_id: m.content for m in last_messages}
+
+    return [
+        {
+            "id": c.id,
+            "phone": c.phone,
+            "customer_name": c.customer_name,
+            "bot_enabled": c.bot_enabled,
+            "last_message_at": c.last_message_at,
+            "last_message": last_msg_map.get(c.id),
+        }
+        for c in conversations
+    ]
 
 @app.get("/api/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: int, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
@@ -1462,8 +1496,87 @@ def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db
     return {
         "bot_enabled": conversation.bot_enabled,
         "conversation_id": conversation_id,
-        "message": f"Bot {action} exitosamente"
     }
+
+
+class SendMessageRequest(BaseModel):
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def message_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("El mensaje no puede estar vacío")
+        if len(v) > 4096:
+            raise ValueError("El mensaje no puede superar 4096 caracteres")
+        return v
+
+
+@app.post("/api/conversations/{conversation_id}/send-message")
+def send_manual_message(
+    conversation_id: int,
+    body: SendMessageRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key),
+):
+    """Enviar un mensaje manual al cliente por WhatsApp desde el panel admin"""
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conversation:
+        raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
+
+    wa_url = settings.WA_CLIENT_URL
+    payload = json.dumps({
+        "phone": conversation.phone,
+        "message": body.message,
+        "api_key": settings.API_SECRET_KEY,
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"{wa_url}/send",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con WhatsApp: {e.reason}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error WhatsApp: {str(e)}")
+
+    msg = Message(
+        conversation_id=conversation.id,
+        content=body.message,
+        from_customer=False,
+    )
+    db.add(msg)
+    conversation.last_message_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(msg)
+
+    log_with_context(logger, "info", "Mensaje manual enviado", conversation_id=conversation_id)
+    return {"ok": True, "message_id": msg.id, "created_at": msg.created_at}
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key),
+):
+    """Eliminar una conversación y todos sus mensajes y carrito asociado"""
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conversation:
+        raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
+
+    db.query(Message).filter(Message.conversation_id == conversation_id).delete()
+    db.query(CartItem).filter(CartItem.conversation_id == conversation_id).delete()
+    db.delete(conversation)
+    db.commit()
+
+    log_with_context(logger, "info", "Conversación eliminada", conversation_id=conversation_id)
+    return {"ok": True}
 
 
 # ===== ENDPOINTS DE CARRITO =====
@@ -1757,6 +1870,124 @@ def reset_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api
     invalidate_cache()
     log_with_context(logger, "info", "Perfil del bot restaurado al valor por defecto")
     return {"message": "Perfil restaurado al valor por defecto"}
+
+# ===== VENDORS =====
+
+
+def _hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+class VendorRegister(BaseModel):
+    name: str
+    email: str
+    business_name: Optional[str] = None
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def email_lower(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @field_validator("password")
+    @classmethod
+    def password_min(cls, v: str) -> str:
+        if len(v) < 6:
+            raise ValueError("La contraseña debe tener al menos 6 caracteres")
+        return v
+
+
+class VendorLogin(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def email_lower(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+def vendor_to_dict(v: Vendor) -> dict:
+    return {
+        "id": v.id,
+        "name": v.name,
+        "email": v.email,
+        "business_name": v.business_name,
+        "created_at": v.created_at.isoformat() if v.created_at else None,
+    }
+
+
+@app.post("/api/vendors/register", status_code=201)
+def vendor_register(data: VendorRegister, db: Session = Depends(get_db)):
+    """Registrar un nuevo vendedor."""
+    existing = db.query(Vendor).filter(Vendor.email == data.email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese email")
+    vendor = Vendor(
+        name=data.name.strip(),
+        email=data.email,
+        business_name=data.business_name.strip() if data.business_name else None,
+        hashed_password=_hash_password(data.password),
+    )
+    db.add(vendor)
+    db.commit()
+    db.refresh(vendor)
+    log_with_context(logger, "info", "Vendedor registrado", email=vendor.email)
+    return {"vendor": vendor_to_dict(vendor), "api_key": settings.API_SECRET_KEY}
+
+
+@app.post("/api/vendors/login")
+def vendor_login(data: VendorLogin, db: Session = Depends(get_db)):
+    """Iniciar sesión con email y contraseña."""
+    vendor = db.query(Vendor).filter(Vendor.email == data.email).first()
+    if not vendor or not _verify_password(data.password, vendor.hashed_password):
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+    log_with_context(logger, "info", "Vendedor autenticado", email=vendor.email)
+    return {"vendor": vendor_to_dict(vendor), "api_key": settings.API_SECRET_KEY}
+
+
+@app.get("/api/vendors/me")
+def vendor_me(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+    """Devuelve todos los vendedores registrados (info básica)."""
+    vendors = db.query(Vendor).order_by(Vendor.created_at).all()
+    return {"vendors": [vendor_to_dict(v) for v in vendors]}
+
+
+# ===== WHATSAPP CONNECTION STATUS =====
+
+@app.get("/api/wa/status")
+def wa_status(_: str = Depends(verify_api_key)):
+    """Estado de conexión WhatsApp (conectado, QR, info del vendedor)"""
+    try:
+        req = urllib.request.Request(
+            f"{settings.WA_CLIENT_URL}/status",
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return {"connected": False, "qrDataUrl": None, "info": None}
+
+
+@app.post("/api/wa/disconnect")
+def wa_disconnect(_: str = Depends(verify_api_key)):
+    """Desconectar WhatsApp y borrar sesión"""
+    try:
+        req = urllib.request.Request(
+            f"{settings.WA_CLIENT_URL}/disconnect",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'instantvende-api',
-      script: 'python',
+      script: './venv/Scripts/python.exe',
       args: '-m uvicorn main:app --host 0.0.0.0 --port 8000',
       cwd: './backend',
       max_memory_restart: '500M',
@@ -26,8 +26,8 @@ module.exports = {
       interpreter: 'node',
       autorestart: true,
       restart_delay: 5000,
-      max_restarts: 10,
-      min_uptime: '10s',
+      max_restarts: 50,
+      min_uptime: '5s',
       // Watch para recargar si el archivo cambia (opcional, comentar en producción)
       // watch: ['whatsapp/whatsapp_client.js'],
       env: {

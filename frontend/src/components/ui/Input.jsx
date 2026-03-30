@@ -1,18 +1,20 @@
+import { forwardRef } from 'react'
 import clsx from 'clsx'
 
-export default function Input({
+const Input = forwardRef(function Input({
   label,
   error,
   className = '',
   type = 'text',
   ...props
-}) {
+}, ref) {
   return (
     <div className="flex flex-col gap-1">
       {label && (
         <label className="text-sm font-medium text-slate-700">{label}</label>
       )}
       <input
+        ref={ref}
         type={type}
         className={clsx(
           'w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all duration-200',
@@ -24,4 +26,6 @@ export default function Input({
       {error && <p className="text-xs text-red-500">{error}</p>}
     </div>
   )
-}
+})
+
+export default Input

@@ -1,33 +1,34 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Eye, EyeOff, Zap } from 'lucide-react'
+import { Eye, EyeOff, Zap, Mail, Lock, Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import useAuthStore from '../store/useAuthStore.js'
-import client from '../api/client.js'
+import useVendorStore from '../store/useVendorStore.js'
+import { loginVendor } from '../api/vendors.js'
 
 export default function Login() {
-  const [apiKey, setApiKey] = useState('')
-  const [showKey, setShowKey] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPw, setShowPw] = useState(false)
   const [loading, setLoading] = useState(false)
-  const setApiKeyStore = useAuthStore((s) => s.setApiKey)
+  const setApiKey = useAuthStore((s) => s.setApiKey)
+  const setVendor = useVendorStore((s) => s.setVendor)
   const navigate = useNavigate()
 
-  const handleConnect = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!apiKey.trim()) return
+    if (!email.trim() || !password) return
     setLoading(true)
     try {
-      useAuthStore.setState({ apiKey: apiKey.trim() })
-      await client.get('/api/products', {
-        headers: { 'X-API-Key': apiKey.trim() },
-      })
-      setApiKeyStore(apiKey.trim())
-      toast.success('Conectado exitosamente')
-      navigate('/dashboard')
+      const res = await loginVendor({ email: email.trim(), password })
+      setVendor(res.data.vendor)
+      setApiKey(res.data.api_key)
+      toast.success('Bienvenido de vuelta!')
+      navigate('/connection')
     } catch (err) {
-      useAuthStore.setState({ apiKey: '' })
-      toast.error('API Key inválida. Verifica e intenta de nuevo.')
+      const detail = err?.response?.data?.detail
+      toast.error(detail || 'Email o contraseña incorrectos')
     } finally {
       setLoading(false)
     }
@@ -48,64 +49,69 @@ export default function Login() {
               <Zap size={32} className="text-white" />
             </div>
             <div className="text-center">
-              <h1 className="text-2xl font-bold text-indigo-600">InstantVende Admin</h1>
-              <p className="text-slate-500 text-sm mt-1">
-                Panel de administración web
-              </p>
+              <h1 className="text-2xl font-bold text-indigo-600">InstantVende</h1>
+              <p className="text-slate-500 text-sm mt-1">Inicia sesión en tu panel</p>
             </div>
           </div>
 
           {/* Form */}
-          <form onSubmit={handleConnect} className="flex flex-col gap-4">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-slate-700">
-                API Secret Key
+              <label className="text-xs font-medium text-slate-600 flex items-center gap-1.5">
+                <Mail size={13} className="text-slate-400" /> Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="tu@email.com"
+                required
+                className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-600 flex items-center gap-1.5">
+                <Lock size={13} className="text-slate-400" /> Contraseña
               </label>
               <div className="relative">
                 <input
-                  type={showKey ? 'text' : 'password'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 pr-12 text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all duration-200"
-                  autoComplete="current-password"
+                  type={showPw ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Tu contraseña"
+                  required
+                  className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 pr-10 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowKey(!showKey)}
+                  onClick={() => setShowPw(!showPw)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
                 >
-                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                  {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
-              <p className="text-xs text-slate-400">
-                Usa la clave configurada en tu archivo{' '}
-                <code className="text-indigo-600">.env</code> del backend
-              </p>
             </div>
 
-            <motion.button
+            <button
               type="submit"
-              disabled={loading || !apiKey.trim()}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              disabled={loading}
+              className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 mt-1 shadow-sm"
             >
-              {loading ? (
-                <>
-                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                  </svg>
-                  Conectando...
-                </>
-              ) : (
-                'Conectar'
-              )}
-            </motion.button>
+              {loading ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
+              {loading ? 'Ingresando...' : 'Ingresar'}
+            </button>
           </form>
+
+          <p className="text-center text-sm text-slate-500">
+            ¿No tienes cuenta?{' '}
+            <Link to="/register" className="text-indigo-600 font-medium hover:underline">
+              Regístrate gratis
+            </Link>
+          </p>
         </div>
       </motion.div>
     </div>
   )
 }
+

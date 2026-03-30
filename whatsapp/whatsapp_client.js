@@ -2,10 +2,15 @@ require('dotenv').config();
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const axios = require('axios');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || '';
+const WA_HTTP_PORT = parseInt(process.env.WA_HTTP_PORT || '3001', 10);
 const BUSINESS_NAME = process.env.BUSINESS_NAME || 'InstantVende';
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
 const TYPING_DELAY_MS = parseInt(process.env.TYPING_DELAY_MS || '3000', 10);
@@ -27,6 +32,11 @@ if (!BACKEND_API_KEY) {
 console.log('═══════════════════════════════════════════════════════');
 console.log(`📱 ${BUSINESS_NAME} - Cliente WhatsApp`);
 console.log('═══════════════════════════════════════════════════════\n');
+
+// ===== ESTADO DE CONEXIÓN =====
+let currentQrDataUrl = null;
+let isConnected = false;
+let waClientInfo = null;
 
 const client = new Client({
     authStrategy: new LocalAuth({
@@ -50,11 +60,12 @@ const client = new Client({
  * Llama al backend con reintentos ante errores de red (backoff exponencial).
  * @param {number} attempt - intento actual (empieza en 1)
  */
-async function callBackend(phone, messageBody, attempt = 1) {
+async function callBackend(phone, messageBody, customerName, attempt = 1) {
     try {
         return await axios.post(`${BACKEND_URL}/api/process-message`, {
             phone,
-            message: messageBody
+            message: messageBody,
+            customer_name: customerName || null
         }, {
             timeout: AI_TIMEOUT_MS,
             headers: { 'X-API-Key': BACKEND_API_KEY }
@@ -65,7 +76,7 @@ async function callBackend(phone, messageBody, attempt = 1) {
             const delayMs = 1000 * attempt; // backoff lineal: 1s, 2s, ...
             console.log(`🔄 Reintento ${attempt}/${MAX_RETRIES} en ${delayMs / 1000}s...`);
             await new Promise(resolve => setTimeout(resolve, delayMs));
-            return callBackend(phone, messageBody, attempt + 1);
+            return callBackend(phone, messageBody, customerName, attempt + 1);
         }
         throw error;
     }
@@ -101,28 +112,44 @@ function splitMessage(text, maxLen) {
     return parts;
 }
 
-client.on('qr', (qr) => {
+client.on('qr', async (qr) => {
+    isConnected = false;
+    waClientInfo = null;
+    // Generar data URL de imagen para el panel web
+    try {
+        currentQrDataUrl = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
+    } catch (e) {
+        currentQrDataUrl = null;
+    }
+
     console.log('\n📱 ESCANEA ESTE CÓDIGO QR CON TU WHATSAPP:\n');
     console.log('Pasos:');
     console.log('1. Abre WhatsApp en tu teléfono');
     console.log('2. Ve a Configuración > Dispositivos vinculados');
     console.log('3. Toca "Vincular un dispositivo"');
     console.log('4. Escanea el código de abajo:\n');
-    
+
     qrcode.generate(qr, { small: true });
-    
+
     console.log('\n⏳ Esperando escaneo...\n');
 });
 
 client.on('ready', async () => {
+    isConnected = true;
+    currentQrDataUrl = null;
+    const info = client.info;
+    waClientInfo = {
+        pushname: info.pushname,
+        phone: info.wid.user,
+        platform: info.platform,
+    };
+
     console.log('═══════════════════════════════════════════════════════');
     console.log('✅ WhatsApp conectado exitosamente!');
     console.log('═══════════════════════════════════════════════════════');
     console.log('🤖 Bot activo y listo para recibir mensajes');
     console.log('📊 Backend: ' + BACKEND_URL);
     console.log('═══════════════════════════════════════════════════════\n');
-    
-    const info = await client.info;
     console.log('📱 Cuenta conectada:');
     console.log('   Nombre: ' + info.pushname);
     console.log('   Número: ' + info.wid.user);
@@ -136,7 +163,18 @@ client.on('authenticated', () => {
 
 client.on('auth_failure', (msg) => {
     console.error('❌ Error de autenticación:', msg);
-    console.log('💡 Elimina la carpeta "whatsapp-session" y vuelve a intentar');
+    isConnected = false;
+    waClientInfo = null;
+    currentQrDataUrl = null;
+    const sessionPath = path.resolve(WHATSAPP_SESSION_PATH);
+    try {
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            console.log('🗑️ Sesión inválida eliminada - se generará nuevo QR');
+        }
+    } catch (e) { console.error('⚠️ No se pudo eliminar sesión:', e.message); }
+    console.log('🔄 Reiniciando proceso para generar nuevo QR...');
+    setTimeout(() => process.exit(1), 2000);
 });
 
 client.on('loading_screen', (percent, message) => {
@@ -179,7 +217,7 @@ client.on('message', async (message) => {
 
         console.log('🤖 Procesando con IA...');
 
-        const response = await callBackend(message.from, bodyText);
+        const response = await callBackend(message.from, bodyText, contactName !== 'Desconocido' ? contactName : null);
 
         clearInterval(typingInterval);
         await chat.clearState();
@@ -253,15 +291,20 @@ client.on('message', async (message) => {
 });
 
 client.on('disconnected', (reason) => {
-    console.log('\n❌ WhatsApp desconectado');
-    console.log('Razón:', reason);
-    console.log(`🔄 Reconectando en ${RECONNECT_DELAY_MS / 1000}s...`);
-    setTimeout(() => {
-        console.log('🚀 Intentando reconexión...');
-        client.initialize().catch(error => {
-            console.error('❌ Error al reconectar:', error.message);
-        });
-    }, RECONNECT_DELAY_MS);
+    isConnected = false;
+    waClientInfo = null;
+    currentQrDataUrl = null;
+    console.log('\n❌ WhatsApp desconectado. Razón:', reason);
+    // Borrar sesión para que al reiniciar se genere QR nuevo
+    const sessionPath = path.resolve(WHATSAPP_SESSION_PATH);
+    try {
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            console.log('🗑️ Sesión eliminada - se generará nuevo QR al reiniciar');
+        }
+    } catch (e) { console.error('⚠️ No se pudo eliminar sesión:', e.message); }
+    console.log('🔄 Reiniciando proceso en 3s (PM2 lo levantará automáticamente)...');
+    setTimeout(() => process.exit(1), 3000);
 });
 
 process.on('unhandledRejection', (error) => {
@@ -278,4 +321,88 @@ client.initialize().catch(error => {
     console.log('   1. Verifica tu internet');
     console.log('   2. Elimina carpeta "whatsapp-session"');
     console.log('   3. Intenta de nuevo\n');
+});
+// ===== SERVIDOR HTTP (STATUS + SEND + DISCONNECT) =====
+const sendServer = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+
+    // GET /status — estado de conexión + QR
+    if (req.method === 'GET' && req.url === '/status') {
+        res.writeHead(200);
+        res.end(JSON.stringify({
+            connected: isConnected,
+            qrDataUrl: currentQrDataUrl,
+            info: waClientInfo,
+        }));
+        return;
+    }
+
+    // POST /disconnect — cerrar sesión
+    if (req.method === 'POST' && req.url === '/disconnect') {
+        // Responder INMEDIATAMENTE
+        isConnected = false;
+        waClientInfo = null;
+        currentQrDataUrl = null;
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true }));
+        // Cerrar browser primero (libera file locks de Chrome en Windows)
+        // LUEGO borrar sesión y salir
+        (async () => {
+            const sessionPath = path.resolve(WHATSAPP_SESSION_PATH);
+            // 1. Logout → notifica a los servidores de WA para desvincular el dispositivo del teléfono
+            try {
+                await Promise.race([
+                    client.logout(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('logout timeout')), 5000))
+                ]);
+                console.log('👋 Sesión cerrada en servidores de WhatsApp');
+            } catch (e) { console.error('⚠️ logout:', e.message); }
+            // 2. Cerrar Puppeteer browser → libera locks sobre los archivos de sesión
+            try { await client.pupBrowser.close(); } catch (_) {}
+            // 3. Esperar a que el SO suelte los handles
+            await new Promise(r => setTimeout(r, 1000));
+            // 4. Borrar sesión con force (ya sin Chrome bloqueando)
+            try {
+                if (fs.existsSync(sessionPath)) {
+                    fs.rmSync(sessionPath, { recursive: true, force: true });
+                    console.log('🗑️ Sesión eliminada');
+                }
+            } catch (e) { console.error('⚠️ No se pudo eliminar sesión:', e.message); }
+            console.log('🔄 Saliendo — PM2 reiniciará y generará nuevo QR...');
+            process.exit(1);
+        })();
+        return;
+    }
+
+    // POST /send — envío manual desde el panel
+    if (req.method === 'POST' && req.url === '/send') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', async () => {
+            try {
+                const { phone, message, api_key } = JSON.parse(body);
+                if (api_key !== BACKEND_API_KEY) {
+                    res.writeHead(401);
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const chatId = phone.includes('@') ? phone : `${phone}@c.us`;
+                await client.sendMessage(chatId, message);
+                res.writeHead(200);
+                res.end(JSON.stringify({ ok: true }));
+            } catch (err) {
+                console.error('Error enviando mensaje manual:', err.message);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return;
+    }
+
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: 'Not found' }));
+});
+
+sendServer.listen(WA_HTTP_PORT, () => {
+    console.log(`✅ WA HTTP Server escuchando en puerto ${WA_HTTP_PORT}`);
 });

@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # === Bot profile ===
     BOT_PROFILE_PATH: str = ""  # ruta al bot_profile.json; vacío = usar el del directorio del backend
 
+    # === WhatsApp send server ===
+    WA_CLIENT_URL: str = "http://localhost:3001"
+
     @field_validator("API_SECRET_KEY")
     @classmethod
     def api_key_not_empty(cls, v: str) -> str:

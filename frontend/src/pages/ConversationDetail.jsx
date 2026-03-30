@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Bot, BotOff } from 'lucide-react'
+import { ArrowLeft, Bot, BotOff, Send, Trash2 } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { getConversationMessages, toggleBot, getConversations } from '../api/conversations.js'
+import { getConversationMessages, toggleBot, getConversations, sendMessage, deleteConversation } from '../api/conversations.js'
 import Card from '../components/ui/Card.jsx'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
@@ -20,6 +20,10 @@ export default function ConversationDetail() {
   const [conv, setConv] = useState(null)
   const [loading, setLoading] = useState(true)
   const [toggling, setToggling] = useState(false)
+  const [sendText, setSendText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -58,6 +62,47 @@ export default function ConversationDetail() {
       toast.error('Error al cambiar el estado del bot')
     } finally {
       setToggling(false)
+    }
+  }
+
+  const handleSend = async (e) => {
+    e.preventDefault()
+    const text = sendText.trim()
+    if (!text || !conv) return
+    setSending(true)
+    try {
+      await sendMessage(conv.id, text)
+      setSendText('')
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          content: text,
+          from_customer: false,
+          created_at: new Date().toISOString(),
+        },
+      ])
+      toast.success('Mensaje enviado')
+    } catch (err) {
+      console.error('Error enviando mensaje:', err)
+      toast.error('Error al enviar mensaje — ¿WhatsApp conectado?')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) { setConfirmDelete(true); return }
+    setDeleting(true)
+    try {
+      await deleteConversation(conv.id)
+      toast.success('Conversación eliminada')
+      navigate('/conversations')
+    } catch (err) {
+      console.error('Error eliminando conversación:', err)
+      toast.error('Error al eliminar la conversación')
+      setDeleting(false)
+      setConfirmDelete(false)
     }
   }
 
@@ -129,6 +174,27 @@ export default function ConversationDetail() {
               <><Bot size={16} /> Activar bot</>
             )}
           </Button>
+
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-50 ${
+              confirmDelete
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'border border-red-300 text-red-500 hover:bg-red-50'
+            }`}
+          >
+            <Trash2 size={15} />
+            {deleting ? 'Eliminando...' : confirmDelete ? '¿Confirmar eliminación?' : 'Eliminar conversación'}
+          </button>
+          {confirmDelete && !deleting && (
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="text-xs text-slate-400 hover:text-slate-600 text-center"
+            >
+              Cancelar
+            </button>
+          )}
         </Card>
       </div>
 
@@ -158,7 +224,7 @@ export default function ConversationDetail() {
             </div>
           ) : (
             messages.map((msg, i) => {
-              const isBot = msg.is_bot || msg.role === 'assistant' || msg.sender === 'bot'
+              const isBot = !msg.from_customer
               return (
                 <div
                   key={msg.id ?? i}
@@ -187,6 +253,26 @@ export default function ConversationDetail() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {/* Reply input */}
+        <form onSubmit={handleSend} className="p-3 border-t border-slate-200 flex gap-2">
+          <input
+            type="text"
+            value={sendText}
+            onChange={(e) => setSendText(e.target.value)}
+            placeholder="Escribe un mensaje manualmente..."
+            disabled={sending}
+            className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-4 py-2 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all disabled:opacity-50"
+          />
+          <button
+            type="submit"
+            disabled={!sendText.trim() || sending}
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 text-sm font-medium"
+          >
+            <Send size={15} />
+            {sending ? 'Enviando...' : 'Enviar'}
+          </button>
+        </form>
       </Card>
     </div>
   )

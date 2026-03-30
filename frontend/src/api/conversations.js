@@ -7,3 +7,9 @@ export const getConversationMessages = (id) =>
 
 export const toggleBot = (id, enabled) =>
   client.patch(`/api/conversations/${id}/toggle-bot`, null, { params: { enabled } })
+
+export const sendMessage = (id, message) =>
+  client.post(`/api/conversations/${id}/send-message`, { message })
+
+export const deleteConversation = (id) =>
+  client.delete(`/api/conversations/${id}`)
