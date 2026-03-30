@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+// BACKEND_API_KEY es la API key única del vendor — se genera al registrar/iniciar sesión
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || '';
 const WA_HTTP_PORT = parseInt(process.env.WA_HTTP_PORT || '3001', 10);
 const BUSINESS_NAME = process.env.BUSINESS_NAME || 'InstantVende';
@@ -26,6 +27,7 @@ const ERROR_MSG_GENERAL = process.env.ERROR_MSG_GENERAL ||
 if (!BACKEND_API_KEY) {
     console.error('❌ BACKEND_API_KEY no está configurada en .env');
     console.error('   Copia whatsapp/.env.example a whatsapp/.env y configura la clave');
+    console.error('   Usa la api_key que obtienes al registrar/iniciar sesión como vendor');
     process.exit(1);
 }
 
@@ -37,6 +39,26 @@ console.log('══════════════════════�
 let currentQrDataUrl = null;
 let isConnected = false;
 let waClientInfo = null;
+
+/**
+ * Notifica al backend el estado actual de la sesión WhatsApp.
+ * Usa la BACKEND_API_KEY del vendor para identificar a qué vendor pertenece esta sesión.
+ */
+async function notifySessionStatus(status, { qrCode = null, phoneNumber = null } = {}) {
+    try {
+        await axios.post(`${BACKEND_URL}/api/wa/session/update`, {
+            status,
+            qr_code: qrCode,
+            phone_number: phoneNumber,
+        }, {
+            timeout: 5000,
+            headers: { 'X-API-Key': BACKEND_API_KEY },
+        });
+    } catch (err) {
+        // No es crítico — el fallback de proxy HTTP sigue funcionando
+        console.warn('⚠️  No se pudo notificar al backend el estado WA:', err.message);
+    }
+}
 
 const client = new Client({
     authStrategy: new LocalAuth({
@@ -132,6 +154,9 @@ client.on('qr', async (qr) => {
     qrcode.generate(qr, { small: true });
 
     console.log('\n⏳ Esperando escaneo...\n');
+
+    // Notificar al backend: QR disponible
+    notifySessionStatus('connecting', { qrCode: currentQrDataUrl });
 });
 
 client.on('ready', async () => {
@@ -143,6 +168,9 @@ client.on('ready', async () => {
         phone: info.wid.user,
         platform: info.platform,
     };
+
+    // Notificar al backend: conectado
+    notifySessionStatus('connected', { phoneNumber: info.wid.user });
 
     console.log('═══════════════════════════════════════════════════════');
     console.log('✅ WhatsApp conectado exitosamente!');
@@ -166,6 +194,7 @@ client.on('auth_failure', (msg) => {
     isConnected = false;
     waClientInfo = null;
     currentQrDataUrl = null;
+    notifySessionStatus('disconnected');
     const sessionPath = path.resolve(WHATSAPP_SESSION_PATH);
     try {
         if (fs.existsSync(sessionPath)) {
@@ -295,6 +324,7 @@ client.on('disconnected', (reason) => {
     waClientInfo = null;
     currentQrDataUrl = null;
     console.log('\n❌ WhatsApp desconectado. Razón:', reason);
+    notifySessionStatus('disconnected');
     // Borrar sesión para que al reiniciar se genere QR nuevo
     const sessionPath = path.resolve(WHATSAPP_SESSION_PATH);
     try {
