@@ -10,7 +10,7 @@ import threading
 import concurrent.futures
 import schedule
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -21,8 +21,9 @@ from datetime import datetime, timezone
 import ollama
 
 import bcrypt
+import secrets
 from config import settings
-from auth import verify_api_key, verify_api_key_optional
+from auth import verify_api_key, verify_api_key_optional, API_KEY_HEADER
 from exceptions import (
     setup_exception_handlers,
     handle_db_errors,
@@ -36,7 +37,8 @@ from exceptions import (
 from logger import setup_logger, log_with_context
 from backup import BackupManager, start_backup_scheduler
 from database import (
-    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem, BotProfile, Vendor,
+    SessionLocal, Product, Conversation, Message, CartItem, Order, OrderItem,
+    BotProfile, Vendor, WhatsappSession,
 )
 from bot_profile_loader import get_profile, invalidate_cache, get_field, load_default_profile
 
@@ -574,10 +576,39 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def get_or_create_conversation(db: Session, phone: str, customer_name: Optional[str] = None) -> "Conversation":
-    """Obtiene o crea una conversación de forma thread-safe."""
+def get_current_vendor(
+    api_key: str = Security(API_KEY_HEADER),
+    db: Session = Depends(get_db),
+) -> Vendor:
+    """Autentica la solicitud y retorna el Vendor dueño de la API key.
+
+    Cada vendor tiene su propia API key única generada al registrarse.
+    Nunca se confía en vendor_id enviado por el cliente en el body.
+    """
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key inválida o ausente",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    vendor = db.query(Vendor).filter(
+        Vendor.api_key == api_key,
+        Vendor.is_active.is_(True),
+    ).first()
+    if not vendor:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key inválida o ausente",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return vendor
+
+
+def get_or_create_conversation(db: Session, phone: str, vendor_id: int, customer_name: Optional[str] = None) -> "Conversation":
+    """Obtiene o crea una conversación de forma thread-safe, filtrada por vendor."""
     conversation = db.query(Conversation).filter(
-        Conversation.phone == phone
+        Conversation.phone == phone,
+        Conversation.vendor_id == vendor_id,
     ).first()
 
     if conversation:
@@ -587,7 +618,7 @@ def get_or_create_conversation(db: Session, phone: str, customer_name: Optional[
         return conversation
 
     try:
-        conversation = Conversation(phone=phone, customer_name=customer_name)
+        conversation = Conversation(phone=phone, vendor_id=vendor_id, customer_name=customer_name)
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -595,7 +626,8 @@ def get_or_create_conversation(db: Session, phone: str, customer_name: Optional[
     except IntegrityError:
         db.rollback()
         conversation = db.query(Conversation).filter(
-            Conversation.phone == phone
+            Conversation.phone == phone,
+            Conversation.vendor_id == vendor_id,
         ).first()
         if not conversation:
             raise
@@ -734,16 +766,26 @@ class OrderStatusUpdate(BaseModel):
         return v
 
 @app.get("/api/products")
-def get_products(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    return db.query(Product).all()
+def get_products(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    return db.query(Product).filter(Product.vendor_id == current_vendor.id).all()
 
 @app.post("/api/products")
-def create_product(product: ProductCreate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def create_product(
+    product: ProductCreate,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     with handle_db_errors(db):
-        existing = db.query(Product).filter(Product.name == product.name).first()
+        existing = db.query(Product).filter(
+            Product.name == product.name,
+            Product.vendor_id == current_vendor.id,
+        ).first()
         if existing:
             raise ProductDuplicateException(f"Ya existe un producto con el nombre '{product.name}'")
-        db_product = Product(**product.model_dump())
+        db_product = Product(**product.model_dump(), vendor_id=current_vendor.id)
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
@@ -755,10 +797,13 @@ def update_product(
     product_id: int,
     product: ProductCreate,
     db: Session = Depends(get_db),
-    _: str = Depends(verify_api_key)
+    current_vendor: Vendor = Depends(get_current_vendor),
 ):
     """Actualizar un producto existente"""
-    db_product = db.query(Product).filter(Product.id == product_id).first()
+    db_product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.vendor_id == current_vendor.id,
+    ).first()
     if not db_product:
         raise ProductNotFoundException(f"Producto {product_id} no encontrado")
 
@@ -766,7 +811,8 @@ def update_product(
         if product.name != db_product.name:
             existing = db.query(Product).filter(
                 Product.name == product.name,
-                Product.id != product_id
+                Product.vendor_id == current_vendor.id,
+                Product.id != product_id,
             ).first()
             if existing:
                 raise ProductDuplicateException(f"Ya existe un producto con el nombre '{product.name}'")
@@ -783,10 +829,13 @@ def update_product(
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    _: str = Depends(verify_api_key)
+    current_vendor: Vendor = Depends(get_current_vendor),
 ):
     """Eliminar un producto"""
-    db_product = db.query(Product).filter(Product.id == product_id).first()
+    db_product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.vendor_id == current_vendor.id,
+    ).first()
     if not db_product:
         raise ProductNotFoundException(f"Producto {product_id} no encontrado")
 
@@ -1027,13 +1076,17 @@ def generate_ai_response(message: str, products: List[Product], profile: dict, c
         )
 
 @app.post("/api/process-message")
-def process_message(request: MessageRequest, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def process_message(
+    request: MessageRequest,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Procesar mensaje con IA, comandos y manejo de carrito/pedidos"""
 
     log_with_context(logger, "info", "Nuevo mensaje recibido", phone=request.phone[-4:], msg_preview=request.message[:100])
 
-    # Cargar perfil activo (con fallback a JSON por defecto)
-    profile = get_profile(db)
+    # Cargar perfil activo del vendor (con fallback a JSON por defecto)
+    profile = get_profile(db, vendor_id=current_vendor.id)
     ai_cfg = profile.get("ai", {})
     msgs_cfg = profile.get("messages", {})
     bot_name = get_field(profile, "bot", "name", default="Favio")
@@ -1052,8 +1105,10 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         if _message_cooldowns.check_and_set(request.phone, message_cooldown):
             raise RateLimitException(msgs_cfg.get("rate_limit", "Un momento, estoy procesando tu mensaje anterior 🙏"))
 
-        # 1. Buscar o crear conversación (thread-safe)
-        conversation = get_or_create_conversation(db, request.phone, request.customer_name)
+        # 1. Buscar o crear conversación (thread-safe, filtrada por vendor)
+        conversation = get_or_create_conversation(
+            db, request.phone, current_vendor.id, request.customer_name
+        )
         log_with_context(logger, "info", "Conversación activa", conversation_id=conversation.id)
 
         # 2. Guardar mensaje del cliente
@@ -1083,7 +1138,9 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
         media_url = None
 
         if command == "catalog":
-            products = db.query(Product).filter(Product.stock > 0).all()
+            products = db.query(Product).filter(
+                Product.stock > 0, Product.vendor_id == current_vendor.id
+            ).all()
             ai_response = generate_catalog(products, profile)
             log_with_context(logger, "info", "Comando: catálogo", product_count=len(products))
 
@@ -1092,7 +1149,9 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                 CartItem.conversation_id == conversation.id
             ).all()
             product_ids = [item.product_id for item in cart_items]
-            products_list = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
+            products_list = db.query(Product).filter(
+                Product.id.in_(product_ids), Product.vendor_id == current_vendor.id
+            ).all() if product_ids else []
             products_dict = {p.id: p for p in products_list}
             ai_response = generate_cart_display(cart_items, products_dict)
             log_with_context(logger, "info", "Comando: ver carrito", item_count=len(cart_items))
@@ -1106,7 +1165,9 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                 ai_response = "🛒 Tu carrito está vacío.\n\nEscribe *#catalogo* para ver nuestros productos."
             else:
                 product_ids = [item.product_id for item in cart_items]
-                products_list = db.query(Product).filter(Product.id.in_(product_ids)).all()
+                products_list = db.query(Product).filter(
+                    Product.id.in_(product_ids), Product.vendor_id == current_vendor.id
+                ).all()
                 products_dict = {p.id: p for p in products_list}
 
                 # Validar stock y calcular total
@@ -1132,6 +1193,7 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                         order = Order(
                             conversation_id=conversation.id,
                             phone=request.phone,
+                            vendor_id=current_vendor.id,
                             total=0,  # se actualizará a confirmed_total antes del commit
                             status="pending"
                         )
@@ -1144,7 +1206,8 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
                         # Crear items del pedido y descontar stock
                         for item in cart_items:
                             product = db.query(Product).filter(
-                                Product.id == item.product_id
+                                Product.id == item.product_id,
+                                Product.vendor_id == current_vendor.id,
                             ).with_for_update().first()
 
                             if not product:
@@ -1210,7 +1273,8 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
 
         elif command == "status":
             last_order = db.query(Order).filter(
-                Order.phone == request.phone
+                Order.phone == request.phone,
+                Order.vendor_id == current_vendor.id,
             ).order_by(Order.created_at.desc()).first()
 
             if not last_order:
@@ -1239,14 +1303,17 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
             match = re.search(r'\d+', request.message)
             if match:
                 product_num = int(match.group())
-                products = db.query(Product).filter(Product.stock > 0).all()
+                products = db.query(Product).filter(
+                    Product.stock > 0, Product.vendor_id == current_vendor.id
+                ).all()
 
                 if 1 <= product_num <= len(products):
                     product = products[product_num - 1]
 
                     # Re-consultar con lock para evitar race condition de stock
                     locked_product = db.query(Product).filter(
-                        Product.id == product.id
+                        Product.id == product.id,
+                        Product.vendor_id == current_vendor.id,
                     ).with_for_update().first()
 
                     if not locked_product or locked_product.stock < 1:
@@ -1348,7 +1415,9 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
             elif quick_intent["type"] in ("recommendation", "purchase"):
                 # Nivel 2 — respuesta rápida (<2s): mostrar catálogo inmediatamente sin IA
                 max_products_ctx = ai_cfg.get("max_products_in_context", 8)
-                products = db.query(Product).filter(Product.stock > 0).limit(max_products_ctx).all()
+                products = db.query(Product).filter(
+                    Product.stock > 0, Product.vendor_id == current_vendor.id
+                ).limit(max_products_ctx).all()
                 if products:
                     catalog_text = generate_catalog(products, profile)
                     context_msg = msgs_cfg.get(
@@ -1380,7 +1449,9 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
             ).all()
             recently_viewed = [str(item.product_id) for item in cart_items]
 
-            products = db.query(Product).filter(Product.stock > 0).all()
+            products = db.query(Product).filter(
+                Product.stock > 0, Product.vendor_id == current_vendor.id
+            ).all()
             log_with_context(logger, "info", "Procesando con IA", product_count=len(products))
 
             ai_response = generate_ai_response(
@@ -1426,11 +1497,14 @@ def process_message(request: MessageRequest, db: Session = Depends(get_db), _: s
 # ===== ENDPOINTS DE CONVERSACIONES =====
 
 @app.get("/api/conversations")
-def get_conversations(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    """Obtener todas las conversaciones ordenadas por más reciente"""
-    conversations = db.query(Conversation).order_by(
-        Conversation.last_message_at.desc()
-    ).all()
+def get_conversations(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """Obtener todas las conversaciones del vendor ordenadas por más reciente"""
+    conversations = db.query(Conversation).filter(
+        Conversation.vendor_id == current_vendor.id
+    ).order_by(Conversation.last_message_at.desc()).all()
 
     if not conversations:
         return []
@@ -1462,10 +1536,15 @@ def get_conversations(db: Session = Depends(get_db), _: str = Depends(verify_api
     ]
 
 @app.get("/api/conversations/{conversation_id}/messages")
-def get_messages(conversation_id: int, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def get_messages(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Obtener todos los mensajes de una conversación específica"""
     conversation = db.query(Conversation).filter(
-        Conversation.id == conversation_id
+        Conversation.id == conversation_id,
+        Conversation.vendor_id == current_vendor.id,
     ).first()
 
     if not conversation:
@@ -1478,21 +1557,27 @@ def get_messages(conversation_id: int, db: Session = Depends(get_db), _: str = D
     return messages
 
 @app.patch("/api/conversations/{conversation_id}/toggle-bot")
-def toggle_bot(conversation_id: int, enabled: bool, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def toggle_bot(
+    conversation_id: int,
+    enabled: bool,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Activar/desactivar bot para una conversación (para intervención humana)"""
     conversation = db.query(Conversation).filter(
-        Conversation.id == conversation_id
+        Conversation.id == conversation_id,
+        Conversation.vendor_id == current_vendor.id,
     ).first()
-    
+
     if not conversation:
         raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
-    
+
     conversation.bot_enabled = enabled
     db.commit()
-    
+
     action = "activado" if enabled else "desactivado"
     log_with_context(logger, "info", f"Bot {action}", conversation_id=conversation_id)
-    
+
     return {
         "bot_enabled": conversation.bot_enabled,
         "conversation_id": conversation_id,
@@ -1518,18 +1603,22 @@ def send_manual_message(
     conversation_id: int,
     body: SendMessageRequest,
     db: Session = Depends(get_db),
-    _: str = Depends(verify_api_key),
+    current_vendor: Vendor = Depends(get_current_vendor),
 ):
     """Enviar un mensaje manual al cliente por WhatsApp desde el panel admin"""
-    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.vendor_id == current_vendor.id,
+    ).first()
     if not conversation:
         raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
 
-    wa_url = settings.WA_CLIENT_URL
+    # Usar URL del cliente WA del vendor, con fallback al global
+    wa_url = current_vendor.wa_client_url or settings.WA_CLIENT_URL
     payload = json.dumps({
         "phone": conversation.phone,
         "message": body.message,
-        "api_key": settings.API_SECRET_KEY,
+        "api_key": current_vendor.api_key,
     }).encode()
     try:
         req = urllib.request.Request(
@@ -1563,10 +1652,13 @@ def send_manual_message(
 def delete_conversation(
     conversation_id: int,
     db: Session = Depends(get_db),
-    _: str = Depends(verify_api_key),
+    current_vendor: Vendor = Depends(get_current_vendor),
 ):
     """Eliminar una conversación y todos sus mensajes y carrito asociado"""
-    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.vendor_id == current_vendor.id,
+    ).first()
     if not conversation:
         raise ConversationNotFoundException(f"Conversación {conversation_id} no encontrada")
 
@@ -1582,13 +1674,24 @@ def delete_conversation(
 # ===== ENDPOINTS DE CARRITO =====
 
 @app.post("/api/cart/{phone}/add")
-def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def api_add_to_cart(
+    phone: str,
+    item: CartItemRequest,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Agregar producto al carrito vía API"""
-    conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
+    conversation = db.query(Conversation).filter(
+        Conversation.phone == phone,
+        Conversation.vendor_id == current_vendor.id,
+    ).first()
     if not conversation:
         raise ConversationNotFoundException(f"Conversación para teléfono {phone} no encontrada")
 
-    product = db.query(Product).filter(Product.id == item.product_id).first()
+    product = db.query(Product).filter(
+        Product.id == item.product_id,
+        Product.vendor_id == current_vendor.id,
+    ).first()
     if not product:
         raise ProductNotFoundException(f"Producto {item.product_id} no encontrado")
     if product.stock < item.quantity:
@@ -1615,9 +1718,16 @@ def api_add_to_cart(phone: str, item: CartItemRequest, db: Session = Depends(get
 
 
 @app.get("/api/cart/{phone}")
-def api_get_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def api_get_cart(
+    phone: str,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Ver carrito de un cliente vía API"""
-    conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
+    conversation = db.query(Conversation).filter(
+        Conversation.phone == phone,
+        Conversation.vendor_id == current_vendor.id,
+    ).first()
     if not conversation:
         return {"items": [], "total": 0, "total_soles": 0.0}
 
@@ -1628,7 +1738,10 @@ def api_get_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(ver
     result = []
     total = 0
     for item in cart_items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
+        product = db.query(Product).filter(
+            Product.id == item.product_id,
+            Product.vendor_id == current_vendor.id,
+        ).first()
         if product:
             subtotal = product.price * item.quantity
             total += subtotal
@@ -1647,9 +1760,16 @@ def api_get_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(ver
 
 
 @app.delete("/api/cart/{phone}")
-def api_clear_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def api_clear_cart(
+    phone: str,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Vaciar carrito de un cliente"""
-    conversation = db.query(Conversation).filter(Conversation.phone == phone).first()
+    conversation = db.query(Conversation).filter(
+        Conversation.phone == phone,
+        Conversation.vendor_id == current_vendor.id,
+    ).first()
     if not conversation:
         raise ConversationNotFoundException(f"Conversación para teléfono {phone} no encontrada")
     deleted = db.query(CartItem).filter(
@@ -1662,9 +1782,13 @@ def api_clear_cart(phone: str, db: Session = Depends(get_db), _: str = Depends(v
 # ===== ENDPOINTS DE PEDIDOS =====
 
 @app.get("/api/orders")
-def get_orders(status: Optional[str] = None, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    """Listar todos los pedidos, opcionalmente filtrados por estado"""
-    query = db.query(Order)
+def get_orders(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """Listar todos los pedidos del vendor, opcionalmente filtrados por estado"""
+    query = db.query(Order).filter(Order.vendor_id == current_vendor.id)
     if status:
         query = query.filter(Order.status == status)
     orders = query.order_by(Order.created_at.desc()).all()
@@ -1695,9 +1819,16 @@ def get_orders(status: Optional[str] = None, db: Session = Depends(get_db), _: s
 
 
 @app.get("/api/orders/{order_id}")
-def get_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def get_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Obtener detalles de un pedido específico"""
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = db.query(Order).filter(
+        Order.id == order_id,
+        Order.vendor_id == current_vendor.id,
+    ).first()
     if not order:
         raise OrderNotFoundException(f"Pedido {order_id} no encontrado")
 
@@ -1723,9 +1854,17 @@ def get_order(order_id: int, db: Session = Depends(get_db), _: str = Depends(ver
 
 
 @app.patch("/api/orders/{order_id}/status")
-def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def update_order_status(
+    order_id: int,
+    update: OrderStatusUpdate,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Actualizar estado de un pedido (y restaurar stock si se cancela)"""
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = db.query(Order).filter(
+        Order.id == order_id,
+        Order.vendor_id == current_vendor.id,
+    ).first()
     if not order:
         raise OrderNotFoundException(f"Pedido {order_id} no encontrado")
 
@@ -1756,46 +1895,64 @@ def update_order_status(order_id: int, update: OrderStatusUpdate, db: Session = 
 # ===== ANALYTICS =====
 
 @app.get("/api/analytics")
-def get_analytics(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    """Dashboard de métricas y estadísticas"""
+def get_analytics(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """Dashboard de métricas y estadísticas del vendor"""
+    vid = current_vendor.id
+
     total_revenue = db.query(func.sum(Order.total)).filter(
-        Order.status.in_(["confirmed", "shipped", "delivered"])
+        Order.vendor_id == vid,
+        Order.status.in_(["confirmed", "shipped", "delivered"]),
     ).scalar() or 0
 
     orders_by_status = db.query(
         Order.status, func.count(Order.id)
-    ).group_by(Order.status).all()
+    ).filter(Order.vendor_id == vid).group_by(Order.status).all()
 
-    top_products = db.query(
-        OrderItem.product_name,
-        func.sum(OrderItem.quantity).label("total_sold"),
-        func.sum(OrderItem.product_price * OrderItem.quantity).label("revenue"),
-    ).group_by(OrderItem.product_name).order_by(
-        func.sum(OrderItem.quantity).desc()
-    ).limit(5).all()
+    # top_products filtrado por pedidos del vendor
+    top_products = (
+        db.query(
+            OrderItem.product_name,
+            func.sum(OrderItem.quantity).label("total_sold"),
+            func.sum(OrderItem.product_price * OrderItem.quantity).label("revenue"),
+        )
+        .join(Order, Order.id == OrderItem.order_id)
+        .filter(Order.vendor_id == vid)
+        .group_by(OrderItem.product_name)
+        .order_by(func.sum(OrderItem.quantity).desc())
+        .limit(5)
+        .all()
+    )
+
+    conv_total = db.query(func.count(Conversation.id)).filter(
+        Conversation.vendor_id == vid
+    ).scalar() or 0
+
+    msg_total = (
+        db.query(func.count(Message.id))
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .filter(Conversation.vendor_id == vid)
+        .scalar() or 0
+    )
 
     return {
-        "conversations": {
-            "total": db.query(func.count(Conversation.id)).scalar() or 0,
-        },
-        "messages": {
-            "total": db.query(func.count(Message.id)).scalar() or 0,
-        },
+        "conversations": {"total": conv_total},
+        "messages": {"total": msg_total},
         "orders": {
-            "total": db.query(func.count(Order.id)).scalar() or 0,
-            "by_status": {status: count for status, count in orders_by_status},
-            "pending":   db.query(func.count(Order.id)).filter(Order.status == "pending").scalar() or 0,
-            "confirmed": db.query(func.count(Order.id)).filter(Order.status == "confirmed").scalar() or 0,
-            "shipped":   db.query(func.count(Order.id)).filter(Order.status == "shipped").scalar() or 0,
-            "delivered": db.query(func.count(Order.id)).filter(Order.status == "delivered").scalar() or 0,
-            "cancelled": db.query(func.count(Order.id)).filter(Order.status == "cancelled").scalar() or 0,
+            "total": db.query(func.count(Order.id)).filter(Order.vendor_id == vid).scalar() or 0,
+            "by_status": {s: count for s, count in orders_by_status},
+            "pending":   db.query(func.count(Order.id)).filter(Order.vendor_id == vid, Order.status == "pending").scalar() or 0,
+            "confirmed": db.query(func.count(Order.id)).filter(Order.vendor_id == vid, Order.status == "confirmed").scalar() or 0,
+            "shipped":   db.query(func.count(Order.id)).filter(Order.vendor_id == vid, Order.status == "shipped").scalar() or 0,
+            "delivered": db.query(func.count(Order.id)).filter(Order.vendor_id == vid, Order.status == "delivered").scalar() or 0,
+            "cancelled": db.query(func.count(Order.id)).filter(Order.vendor_id == vid, Order.status == "cancelled").scalar() or 0,
         },
-        "revenue": {
-            "total_soles": total_revenue / 100,
-        },
+        "revenue": {"total_soles": total_revenue / 100},
         "products": {
-            "total": db.query(func.count(Product.id)).scalar() or 0,
-            "in_stock": db.query(func.count(Product.id)).filter(Product.stock > 0).scalar() or 0,
+            "total": db.query(func.count(Product.id)).filter(Product.vendor_id == vid).scalar() or 0,
+            "in_stock": db.query(func.count(Product.id)).filter(Product.vendor_id == vid, Product.stock > 0).scalar() or 0,
             "top_sellers": [
                 {
                     "name": name,
@@ -1831,9 +1988,14 @@ def check_ollama(_: Optional[str] = Depends(verify_api_key_optional)):
 # ===== BOT PROFILE ENDPOINTS =====
 
 @app.get("/api/bot-profile")
-def read_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    """Leer el perfil activo del bot (desde DB o desde el JSON por defecto)."""
-    row = db.query(BotProfile).order_by(BotProfile.id.desc()).first()
+def read_bot_profile(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """Leer el perfil activo del bot del vendor (desde DB o desde el JSON por defecto)."""
+    row = db.query(BotProfile).filter(
+        BotProfile.vendor_id == current_vendor.id
+    ).first()
     if row:
         return json.loads(row.profile_json)
     return load_default_profile()
@@ -1843,32 +2005,40 @@ def read_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api_
 def update_bot_profile(
     profile_data: dict = Body(...),
     db: Session = Depends(get_db),
-    _: str = Depends(verify_api_key),
+    current_vendor: Vendor = Depends(get_current_vendor),
 ):
-    """Actualizar el perfil completo del bot. Los cambios se reflejan en el siguiente mensaje."""
+    """Actualizar el perfil completo del bot del vendor. Los cambios se reflejan en el siguiente mensaje."""
     profile_json_str = json.dumps(profile_data, ensure_ascii=False)
-    row = db.query(BotProfile).order_by(BotProfile.id.desc()).first()
+    row = db.query(BotProfile).filter(BotProfile.vendor_id == current_vendor.id).first()
     if row:
         row.profile_json = profile_json_str
         row.updated_at = datetime.now(timezone.utc)
+        row.updated_by_vendor_id = current_vendor.id
     else:
-        row = BotProfile(profile_json=profile_json_str)
+        row = BotProfile(
+            vendor_id=current_vendor.id,
+            profile_json=profile_json_str,
+            updated_by_vendor_id=current_vendor.id,
+        )
         db.add(row)
     with handle_db_errors(db):
         db.commit()
-    invalidate_cache()
-    log_with_context(logger, "info", "Perfil del bot actualizado")
+    invalidate_cache(vendor_id=current_vendor.id)
+    log_with_context(logger, "info", "Perfil del bot actualizado", vendor_id=current_vendor.id)
     return {"message": "Perfil actualizado correctamente"}
 
 
 @app.post("/api/bot-profile/reset")
-def reset_bot_profile(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+def reset_bot_profile(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
     """Restaurar el perfil por defecto eliminando el perfil guardado en DB."""
     with handle_db_errors(db):
-        db.query(BotProfile).delete()
+        db.query(BotProfile).filter(BotProfile.vendor_id == current_vendor.id).delete()
         db.commit()
-    invalidate_cache()
-    log_with_context(logger, "info", "Perfil del bot restaurado al valor por defecto")
+    invalidate_cache(vendor_id=current_vendor.id)
+    log_with_context(logger, "info", "Perfil del bot restaurado al valor por defecto", vendor_id=current_vendor.id)
     return {"message": "Perfil restaurado al valor por defecto"}
 
 # ===== VENDORS =====
@@ -1880,6 +2050,15 @@ def _hash_password(plain: str) -> str:
 
 def _verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+def _generate_unique_api_key(db: Session, max_attempts: int = 10) -> str:
+    """Genera una API key única garantizando que no exista ya en la DB."""
+    for _ in range(max_attempts):
+        key = secrets.token_urlsafe(32)
+        if not db.query(Vendor).filter(Vendor.api_key == key).first():
+            return key
+    raise HTTPException(status_code=500, detail="No se pudo generar una API key única")
 
 
 class VendorRegister(BaseModel):
@@ -1917,56 +2096,130 @@ def vendor_to_dict(v: Vendor) -> dict:
         "name": v.name,
         "email": v.email,
         "business_name": v.business_name,
+        "is_active": v.is_active,
         "created_at": v.created_at.isoformat() if v.created_at else None,
     }
 
 
 @app.post("/api/vendors/register", status_code=201)
 def vendor_register(data: VendorRegister, db: Session = Depends(get_db)):
-    """Registrar un nuevo vendedor."""
+    """Registrar un nuevo vendedor. Genera una API key única por vendor."""
     existing = db.query(Vendor).filter(Vendor.email == data.email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese email")
+
+    # Generar API key única — no re-usar la clave global del sistema
+    api_key = _generate_unique_api_key(db)
+
     vendor = Vendor(
         name=data.name.strip(),
         email=data.email,
         business_name=data.business_name.strip() if data.business_name else None,
         hashed_password=_hash_password(data.password),
+        api_key=api_key,
+        is_active=True,
     )
     db.add(vendor)
     db.commit()
     db.refresh(vendor)
     log_with_context(logger, "info", "Vendedor registrado", email=vendor.email)
-    return {"vendor": vendor_to_dict(vendor), "api_key": settings.API_SECRET_KEY}
+    return {"vendor": vendor_to_dict(vendor), "api_key": vendor.api_key}
 
 
 @app.post("/api/vendors/login")
 def vendor_login(data: VendorLogin, db: Session = Depends(get_db)):
-    """Iniciar sesión con email y contraseña."""
+    """Iniciar sesión con email y contraseña. Retorna la API key del vendor."""
     vendor = db.query(Vendor).filter(Vendor.email == data.email).first()
     if not vendor or not _verify_password(data.password, vendor.hashed_password):
         raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+    if not vendor.is_active:
+        raise HTTPException(status_code=403, detail="Cuenta desactivada")
+
+    # Generar nueva api_key si el vendor aún no tiene una
+    if not vendor.api_key:
+        vendor.api_key = _generate_unique_api_key(db)
+        db.commit()
+        db.refresh(vendor)
+
     log_with_context(logger, "info", "Vendedor autenticado", email=vendor.email)
-    return {"vendor": vendor_to_dict(vendor), "api_key": settings.API_SECRET_KEY}
+    return {"vendor": vendor_to_dict(vendor), "api_key": vendor.api_key}
 
 
 @app.get("/api/vendors/me")
-def vendor_me(db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
-    """Devuelve todos los vendedores registrados (info básica)."""
-    vendors = db.query(Vendor).order_by(Vendor.created_at).all()
-    return {"vendors": [vendor_to_dict(v) for v in vendors]}
+def vendor_me(current_vendor: Vendor = Depends(get_current_vendor)):
+    """Devuelve la información del vendor autenticado."""
+    return {"vendor": vendor_to_dict(current_vendor)}
 
 
 # ===== WHATSAPP CONNECTION STATUS =====
 
-@app.get("/api/wa/status")
-def wa_status(_: str = Depends(verify_api_key)):
-    """Estado de conexión WhatsApp (conectado, QR, info del vendedor)"""
-    try:
-        req = urllib.request.Request(
-            f"{settings.WA_CLIENT_URL}/status",
-            method="GET"
+class WaSessionUpdate(BaseModel):
+    """Payload enviado por el cliente WA para actualizar su estado en la DB."""
+    status: str          # disconnected | connecting | connected
+    qr_code: Optional[str] = None
+    phone_number: Optional[str] = None
+
+
+@app.post("/api/wa/session/update")
+def wa_session_update(
+    body: WaSessionUpdate,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """El cliente WA llama a este endpoint para actualizar su estado de sesión."""
+    session = db.query(WhatsappSession).filter(
+        WhatsappSession.vendor_id == current_vendor.id
+    ).first()
+
+    now = datetime.now(timezone.utc)
+    if session:
+        session.status = body.status
+        session.qr_code = body.qr_code
+        session.phone_number = body.phone_number
+        session.updated_at = now
+        if body.status == "connected":
+            session.connected_at = now
+    else:
+        session = WhatsappSession(
+            vendor_id=current_vendor.id,
+            status=body.status,
+            qr_code=body.qr_code,
+            phone_number=body.phone_number,
+            connected_at=now if body.status == "connected" else None,
         )
+        db.add(session)
+
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/wa/status")
+def wa_status(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """Estado de conexión WhatsApp del vendor autenticado.
+
+    Primero consulta la DB (actualizada por el cliente WA vía /api/wa/session/update),
+    con fallback al proxy HTTP al cliente WA del vendor.
+    """
+    # Intentar leer desde la tabla de sesiones (fuente de verdad si el cliente WA la actualiza)
+    session = db.query(WhatsappSession).filter(
+        WhatsappSession.vendor_id == current_vendor.id
+    ).first()
+    if session:
+        return {
+            "connected": session.status == "connected",
+            "status": session.status,
+            "qrDataUrl": session.qr_code,
+            "phone_number": session.phone_number,
+            "connected_at": session.connected_at.isoformat() if session.connected_at else None,
+        }
+
+    # Fallback: proxear al servidor HTTP del cliente WA del vendor
+    wa_url = current_vendor.wa_client_url or settings.WA_CLIENT_URL
+    try:
+        req = urllib.request.Request(f"{wa_url}/status", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
     except Exception:
@@ -1974,14 +2227,30 @@ def wa_status(_: str = Depends(verify_api_key)):
 
 
 @app.post("/api/wa/disconnect")
-def wa_disconnect(_: str = Depends(verify_api_key)):
-    """Desconectar WhatsApp y borrar sesión"""
+def wa_disconnect(
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor),
+):
+    """Desconectar WhatsApp y borrar sesión del vendor autenticado."""
+    # Actualizar estado en DB
+    session = db.query(WhatsappSession).filter(
+        WhatsappSession.vendor_id == current_vendor.id
+    ).first()
+    if session:
+        session.status = "disconnected"
+        session.qr_code = None
+        session.phone_number = None
+        session.connected_at = None
+        db.commit()
+
+    # Proxear al servidor HTTP del cliente WA del vendor
+    wa_url = current_vendor.wa_client_url or settings.WA_CLIENT_URL
     try:
         req = urllib.request.Request(
-            f"{settings.WA_CLIENT_URL}/disconnect",
+            f"{wa_url}/disconnect",
             data=b"{}",
             method="POST",
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
